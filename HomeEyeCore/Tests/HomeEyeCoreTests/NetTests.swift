@@ -130,6 +130,17 @@ final class NetTests: XCTestCase {
         XCTAssertFalse(w.contains("Bad"))
     }
 
+    func testLoneCRAndCRLFPairsDroppedInNameAndValue() throws {
+        let s = FakeStream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        _ = try HTTPClient.post(host: "h", port: 80, path: "/", headers: [
+            ("Ok", "tab\tvalue"), ("LoneV", "a\rb"), ("PairV", "a\r\nb"),
+            ("Lone\rName", "v"), ("Pair\r\nName", "v"), ("Co:lon", "v")],
+            body: [], connectTimeout: 1, readTimeout: 1, connector: { _, _, _ in s })
+        let w = String(decoding: s.written, as: UTF8.self)
+        XCTAssertTrue(w.contains("Ok: tab\tvalue\r\n"))
+        for bad in ["LoneV", "PairV", "Lone", "Pair", "Co:lon"] { XCTAssertFalse(w.contains(bad), bad) }
+    }
+
     func testBadPathAndHostRejected() {
         for (h, p) in [("h", "/a b"), ("h", "/a\r\nX: y"), ("h", ""), ("h h", "/"), ("h\r\n", "/")] {
             XCTAssertThrowsError(try HTTPClient.post(host: h, port: 80, path: p, headers: [], body: [],

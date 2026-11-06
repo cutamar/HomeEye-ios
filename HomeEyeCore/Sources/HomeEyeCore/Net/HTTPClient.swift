@@ -33,7 +33,7 @@ public enum HTTPClient {
         var head = "POST \(path) HTTP/1.1\r\n"
         let hostName = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
         head += "Host: \(port == 80 ? hostName : "\(hostName):\(port)")\r\n"
-        for (n, v) in headers where !n.contains("\r") && !n.contains("\n") && !v.contains("\r") && !v.contains("\n") {
+        for (n, v) in headers where isValidHeaderName(n) && isValidHeaderValue(v) {
             head += "\(n): \(v)\r\n"
         }
         head += "Content-Length: \(body.count)\r\nConnection: close\r\n\r\n"
@@ -65,6 +65,15 @@ public enum HTTPClient {
             bodyBytes = try reader.readToEnd(limit: maxBody)
         }
         return HTTPResponse(status: status, headers: respHead.headers, body: bodyBytes)
+    }
+
+    /// Scalar-based checks (not Character-based: "\r\n" is a single Character).
+    private static func isValidHeaderName(_ s: String) -> Bool {
+        !s.isEmpty && !s.unicodeScalars.contains { $0.value <= 0x20 || $0.value == 0x7f || $0 == ":" }
+    }
+
+    private static func isValidHeaderValue(_ s: String) -> Bool {
+        !s.unicodeScalars.contains { ($0.value < 0x20 && $0.value != 0x09) || $0.value == 0x7f }
     }
 
     private static func readChunked(_ reader: MessageReader) throws -> [UInt8] {
