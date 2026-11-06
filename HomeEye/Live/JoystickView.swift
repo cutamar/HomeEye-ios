@@ -11,6 +11,7 @@ struct JoystickView: View {
 
     @State private var knobOffset: CGSize = .zero
     @State private var isDragging = false
+    @GestureState private var isPressed = false
 
     init(
         size: CGFloat = 168,
@@ -31,7 +32,7 @@ struct JoystickView: View {
             Circle()
                 .fill(Color.white.opacity(translucent ? 0.10 : 0.06))
             Circle()
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
 
             ForEach([0.0, 90.0, 180.0, 270.0], id: \.self) { angle in
                 Image(systemName: "chevron.up")
@@ -43,7 +44,7 @@ struct JoystickView: View {
 
             Circle()
                 .fill(Color.accentColor.opacity(translucent ? 0.85 : 1))
-                .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 3))
+                .overlay(Circle().strokeBorder(Color.white.opacity(0.25), lineWidth: 3))
                 .frame(width: knob, height: knob)
                 .offset(knobOffset)
         }
@@ -51,6 +52,9 @@ struct JoystickView: View {
         .contentShape(Circle())
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .updating($isPressed) { _, state, _ in
+                    state = true
+                }
                 .onChanged { value in
                     if !isDragging {
                         isDragging = true
@@ -65,14 +69,27 @@ struct JoystickView: View {
                     onMove(r.x, r.y)
                 }
                 .onEnded { _ in
-                    isDragging = false
-                    onRelease()
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                        knobOffset = .zero
-                    }
+                    release()
                 }
         )
+        .onChange(of: isPressed) { _, pressed in
+            // Fires on cancellation too (e.g. system gesture interruption).
+            if !pressed { release() }
+        }
+        .onDisappear { release() }
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Pan and tilt control")
         .accessibilityHint("Drag to move the camera")
+        .accessibilityAddTraits(.allowsDirectInteraction)
+    }
+
+    /// Idempotent: only acts if a drag is in progress.
+    private func release() {
+        guard isDragging else { return }
+        isDragging = false
+        onRelease()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            knobOffset = .zero
+        }
     }
 }
