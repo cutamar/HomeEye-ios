@@ -118,10 +118,15 @@ public final class MessageReader {
             start = try readLine()
         }
         var fields: [(name: String, value: String)] = []
+        var skipped = 0
         while true {
             let line = try readLine()
             if line.isEmpty { break }
-            guard let colon = line.firstIndex(of: ":") else { continue }
+            guard let colon = line.firstIndex(of: ":") else {
+                skipped += 1
+                if skipped > MessageReader.maxHeaders { throw NetError.protocolError("too many malformed header lines") }
+                continue
+            }
             if fields.count >= MessageReader.maxHeaders { throw NetError.protocolError("too many headers") }
             let name = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
             let value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)

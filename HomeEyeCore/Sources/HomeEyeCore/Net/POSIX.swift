@@ -40,7 +40,7 @@ func setNoSigPipe(_ fd: Int32) {
 }
 
 func makeTimeval(_ seconds: TimeInterval) -> timeval {
-    let s = max(0, seconds)
+    let s = seconds.isNaN ? 0 : min(max(0, seconds), 1e9)
     let whole = s.rounded(.down)
     let micros = ((s - whole) * 1_000_000).rounded(.down)
     return timeval(tv_sec: .init(whole), tv_usec: .init(micros))

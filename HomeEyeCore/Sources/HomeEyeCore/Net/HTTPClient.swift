@@ -21,12 +21,18 @@ public enum HTTPClient {
         connectTimeout: TimeInterval, readTimeout: TimeInterval,
         connector: (String, Int, TimeInterval) throws -> ByteStream = { try TCPSocket.connect(host: $0, port: $1, timeout: $2) }
     ) throws -> HTTPResponse {
+        func isClean(_ s: String) -> Bool {
+            !s.unicodeScalars.contains { $0.value <= 0x20 || $0.value == 0x7f }
+        }
+        guard !path.isEmpty, isClean(path) else { throw NetError.protocolError("invalid path") }
+        guard !host.isEmpty, isClean(host) else { throw NetError.protocolError("invalid host") }
         let stream = try connector(host, port, connectTimeout)
         defer { stream.close() }
         if let tcp = stream as? TCPSocket { tcp.readTimeout = readTimeout }
 
         var head = "POST \(path) HTTP/1.1\r\n"
-        head += "Host: \(port == 80 ? host : "\(host):\(port)")\r\n"
+        let hostName = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        head += "Host: \(port == 80 ? hostName : "\(hostName):\(port)")\r\n"
         for (n, v) in headers where !n.contains("\r") && !n.contains("\n") && !v.contains("\r") && !v.contains("\n") {
             head += "\(n): \(v)\r\n"
         }
@@ -35,7 +41,10 @@ public enum HTTPClient {
 
         let reader = MessageReader(stream)
         var respHead = try reader.readHead()
+        var interim = 0
         while let s = respHead.status, s >= 100, s < 200 {
+            interim += 1
+            if interim > 100 { throw NetError.protocolError("too many interim responses") }
             respHead = try reader.readHead()
         }
         guard respHead.isResponse, let status = respHead.status else {
