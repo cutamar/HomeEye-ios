@@ -1,5 +1,5 @@
 import Foundation
-import SwiftUI
+import Combine
 import UIKit
 import HomeEyeCore
 
@@ -55,22 +55,30 @@ final class CameraStore: ObservableObject {
     }
 
     func saveThumbnail(_ image: UIImage, for id: String) {
-        guard image.size.width > 0 else { return }
-        let targetWidth: CGFloat = 640
-        let size = CGSize(width: targetWidth,
-                          height: (image.size.height * targetWidth / image.size.width).rounded())
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
-        guard let data = scaled.jpegData(compressionQuality: 0.8) else { return }
+        guard camera(id: id) != nil, image.size.width > 0 else { return }
         let url = repo.thumbnailURL(for: id)
-        try? FileManager.default.createDirectory(
-            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        do {
-            try data.write(to: url, options: .atomic)
-            thumbnailVersion += 1
-        } catch {}
+        DispatchQueue.global(qos: .utility).async {
+            let targetWidth: CGFloat = 640
+            let size = CGSize(width: targetWidth,
+                              height: (image.size.height * targetWidth / image.size.width).rounded())
+            let format = UIGraphicsImageRendererFormat()
+            format.scale = 1
+            let scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+                image.draw(in: CGRect(origin: .zero, size: size))
+            }
+            guard let data = scaled.jpegData(compressionQuality: 0.8) else { return }
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard (try? data.write(to: url, options: .atomic)) != nil else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.camera(id: id) != nil {
+                    self.thumbnailVersion += 1
+                } else {
+                    // Camera was deleted while writing; remove the orphan file.
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+        }
     }
 }

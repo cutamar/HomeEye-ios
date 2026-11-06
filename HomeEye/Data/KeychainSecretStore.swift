@@ -35,7 +35,10 @@ final class KeychainSecretStore: SecretStore {
 
     func setPassword(_ p: String, for id: String) throws {
         let data = Data(p.utf8)
-        let update: [String: Any] = [kSecValueData as String: data]
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
         let status = SecItemUpdate(baseQuery(account: id) as CFDictionary, update as CFDictionary)
         switch status {
         case errSecSuccess:
