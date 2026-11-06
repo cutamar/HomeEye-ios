@@ -1,6 +1,7 @@
 /// RFC 6184 depacketizer (single NAL, STAP-A, FU-A).
 public final class H264Depacketizer: VideoDepacketizer {
     private static let maxNALSize = 4 * 1024 * 1024
+    private static let maxPendingBytes = 16 * 1024 * 1024
 
     private var sps: [UInt8]?
     private var pps: [UInt8]?
@@ -10,6 +11,7 @@ public final class H264Depacketizer: VideoDepacketizer {
     private var pendingTimestamp: UInt32 = 0
     private var pendingHasIDR = false
     private var fuBuffer: [UInt8]?
+    private var pendingBytes = 0
 
     public init(parameterSets: [[UInt8]] = []) {
         for ps in parameterSets {
@@ -30,10 +32,7 @@ public final class H264Depacketizer: VideoDepacketizer {
         var frames: [VideoFrame] = []
 
         if let last = lastSequence, packet.sequence != last &+ 1 {
-            fuBuffer = nil
-            pending = []
-            pendingHasIDR = false
-            waitingForKeyframe = true
+            discardAll()
         }
         lastSequence = packet.sequence
 
@@ -42,6 +41,7 @@ public final class H264Depacketizer: VideoDepacketizer {
         }
 
         let p = packet.payload
+        if let first = p.first, first & 0x1F != 28 { fuBuffer = nil }
         if let first = p.first {
             switch first & 0x1F {
             case 1...23:
@@ -66,6 +66,14 @@ public final class H264Depacketizer: VideoDepacketizer {
         return frames
     }
 
+    private func discardAll() {
+        fuBuffer = nil
+        pending = []
+        pendingBytes = 0
+        pendingHasIDR = false
+        waitingForKeyframe = true
+    }
+
     private func handleFU(_ p: [UInt8], timestamp: UInt32) {
         guard p.count >= 2 else { return }
         let indicator = p[0]
@@ -78,7 +86,10 @@ public final class H264Depacketizer: VideoDepacketizer {
         guard var buf = fuBuffer else { return }
         fuBuffer = nil
         buf.append(contentsOf: p[2...])
-        if buf.count > Self.maxNALSize { return }
+        if buf.count > Self.maxNALSize {
+            discardAll()
+            return
+        }
         if end {
             add(buf, timestamp: timestamp)
         } else {
@@ -92,9 +103,14 @@ public final class H264Depacketizer: VideoDepacketizer {
         switch type {
         case 7, 8:
             storeParameterSet(nal)
-        case 9:
+        case 0, 9, 24...31:
             break
         default:
+            if pendingBytes + nal.count > Self.maxPendingBytes {
+                discardAll()
+                return
+            }
+            pendingBytes += nal.count
             pendingTimestamp = timestamp
             if type == 5 { pendingHasIDR = true }
             pending.append(nal)
@@ -105,6 +121,7 @@ public final class H264Depacketizer: VideoDepacketizer {
         let nalus = pending
         let hasIDR = pendingHasIDR
         pending = []
+        pendingBytes = 0
         pendingHasIDR = false
         guard !nalus.isEmpty, let sps, let pps else { return nil }
         if waitingForKeyframe {
