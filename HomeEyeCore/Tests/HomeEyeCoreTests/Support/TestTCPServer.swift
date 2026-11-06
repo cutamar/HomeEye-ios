@@ -50,7 +50,10 @@ final class TestTCPServer {
     }
 
     private func serve() {
-        let c = accept(listenFd, nil, nil)
+        lock.lock()
+        let lfd = listenFd
+        lock.unlock()
+        let c = lfd >= 0 ? accept(lfd, nil, nil) : -1
         if c >= 0 {
             var data: [UInt8] = []
             var buf = [UInt8](repeating: 0, count: 4096)
@@ -81,7 +84,10 @@ final class TestTCPServer {
     }
 
     func stop() {
+        lock.lock()
+        defer { lock.unlock() }
         if listenFd >= 0 {
+            _ = shutdown(listenFd, shutRdWr)
             posixClose(listenFd)
             listenFd = -1
         }

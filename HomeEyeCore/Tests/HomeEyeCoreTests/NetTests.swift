@@ -114,6 +114,79 @@ final class NetTests: XCTestCase {
         XCTAssertThrowsError(try r.readByte()) { XCTAssertEqual($0 as? NetError, .closed) }
     }
 
+    func test204EmptyBody() throws {
+        let (r, _) = try post("HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nhello")
+        XCTAssertEqual(r.status, 204)
+        XCTAssertTrue(r.body.isEmpty)
+    }
+
+    func testCRLFHeadersDropped() throws {
+        let s = FakeStream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        _ = try HTTPClient.post(host: "h", port: 80, path: "/", headers: [("Good", "1"), ("Bad", "x\r\nInjected: y"), ("Bad\nName", "z")],
+                                body: [], connectTimeout: 1, readTimeout: 1, connector: { _, _, _ in s })
+        let w = String(decoding: s.written, as: UTF8.self)
+        XCTAssertTrue(w.contains("Good: 1\r\n"))
+        XCTAssertFalse(w.contains("Injected"))
+        XCTAssertFalse(w.contains("Bad"))
+    }
+
+    func testLoneCRAndCRLFPairsDroppedInNameAndValue() throws {
+        let s = FakeStream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        _ = try HTTPClient.post(host: "h", port: 80, path: "/", headers: [
+            ("Ok", "tab\tvalue"), ("LoneV", "a\rb"), ("PairV", "a\r\nb"),
+            ("Lone\rName", "v"), ("Pair\r\nName", "v"), ("Co:lon", "v")],
+            body: [], connectTimeout: 1, readTimeout: 1, connector: { _, _, _ in s })
+        let w = String(decoding: s.written, as: UTF8.self)
+        XCTAssertTrue(w.contains("Ok: tab\tvalue\r\n"))
+        for bad in ["LoneV", "PairV", "Lone", "Pair", "Co:lon"] { XCTAssertFalse(w.contains(bad), bad) }
+    }
+
+    func testBadPathAndHostRejected() {
+        for (h, p) in [("h", "/a b"), ("h", "/a\r\nX: y"), ("h", ""), ("h h", "/"), ("h\r\n", "/")] {
+            XCTAssertThrowsError(try HTTPClient.post(host: h, port: 80, path: p, headers: [], body: [],
+                                                     connectTimeout: 1, readTimeout: 1,
+                                                     connector: { _, _, _ in FakeStream("") })) {
+                guard case NetError.protocolError = $0 else { return XCTFail("\($0)") }
+            }
+        }
+    }
+
+    func testIPv6HostBracketed() throws {
+        let s = FakeStream("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+        _ = try HTTPClient.post(host: "fe80::1", port: 2020, path: "/", headers: [], body: [],
+                                connectTimeout: 1, readTimeout: 1, connector: { _, _, _ in s })
+        XCTAssertTrue(String(decoding: s.written, as: UTF8.self).contains("Host: [fe80::1]:2020\r\n"))
+    }
+
+    func testMalformedHeaderLineFlood() {
+        assertProtocolError("HTTP/1.1 200 OK\r\n" + String(repeating: "junk\r\n", count: 150) + "\r\n")
+    }
+
+    func test1xxFlood() {
+        assertProtocolError(String(repeating: "HTTP/1.1 100 Continue\r\n\r\n", count: 150) + "HTTP/1.1 200 OK\r\n\r\n")
+    }
+
+    func testReadToEndLimit() {
+        let r = MessageReader(FakeStream(String(repeating: "a", count: 100)))
+        XCTAssertThrowsError(try r.readToEnd(limit: 50)) {
+            guard case NetError.protocolError = $0 else { return XCTFail("\($0)") }
+        }
+    }
+
+    func testChunkSizeOverflow() {
+        assertProtocolError("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFF\r\n")
+        assertProtocolError("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nFFFFFFFFFFFFFFFFFF\r\n")
+    }
+
+    func testMakeTimevalExtremes() {
+        _ = makeTimeval(.infinity)
+        _ = makeTimeval(-.infinity)
+        _ = makeTimeval(.nan)
+        _ = makeTimeval(1e300)
+        XCTAssertEqual(makeTimeval(.nan).tv_sec, 0)
+        XCTAssertEqual(makeTimeval(1.5).tv_sec, 1)
+    }
+
     func testEndToEndPost() throws {
         let server = try TestTCPServer(response: Array("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nyes".utf8))
         defer { server.stop() }
