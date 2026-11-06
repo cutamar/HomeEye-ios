@@ -63,4 +63,35 @@ final class XMLTests: XCTestCase {
         XCTAssertThrowsError(try XML.parse([UInt8]()))
         XCTAssertThrowsError(try XML.parse([0xFF, 0xFE, 0x00]))
     }
+
+    func testUTF16DoctypeRejected() {
+        let utf16 = Array("<?xml version=\"1.0\" encoding=\"UTF-16\"?><!DOCTYPE a [<!ENTITY x \"y\">]><a>&x;</a>".utf16)
+        var le: [UInt8] = [0xFF, 0xFE]
+        var be: [UInt8] = [0xFE, 0xFF]
+        for u in utf16 {
+            le += [UInt8(u & 0xFF), UInt8(u >> 8)]
+            be += [UInt8(u >> 8), UInt8(u & 0xFF)]
+        }
+        XCTAssertThrowsError(try XML.parse(le))
+        XCTAssertThrowsError(try XML.parse(be))
+        XCTAssertThrowsError(try XML.parse(Array("<\0a\0>\0".utf8)))
+    }
+
+    func testCDATA() throws {
+        let root = try XML.parse("<a><![CDATA[x<y]]>z</a>")
+        XCTAssertEqual(root.text, "x<yz")
+        XCTAssertEqual(root.textContent, "x<yz")
+    }
+
+    func testTruncatedAndMultiRootThrow() {
+        XCTAssertThrowsError(try XML.parse("<a><b>"))
+        XCTAssertThrowsError(try XML.parse("<a/><b/>"))
+    }
+
+    func testDepthLimit() throws {
+        let deep = String(repeating: "<a>", count: 300) + String(repeating: "</a>", count: 300)
+        XCTAssertThrowsError(try XML.parse(deep))
+        let ok = String(repeating: "<a>", count: 100) + String(repeating: "</a>", count: 100)
+        XCTAssertNoThrow(try XML.parse(ok))
+    }
 }

@@ -12,8 +12,8 @@ public enum XMLError: Error {
 public struct XElement {
     public let name: String
     public let attributes: [String: String]
-    public var elements: [XElement]
-    public var text: String
+    public internal(set) var elements: [XElement]
+    public internal(set) var text: String
 
     /// Character data and children interleaved in document order.
     fileprivate var parts: [Part] = []
@@ -22,7 +22,7 @@ public struct XElement {
         case child(Int)
     }
 
-    public init(name: String, attributes: [String: String] = [:], elements: [XElement] = [], text: String = "") {
+    init(name: String, attributes: [String: String] = [:], elements: [XElement] = [], text: String = "") {
         self.name = name
         self.attributes = attributes
         self.elements = elements
@@ -35,7 +35,7 @@ public struct XElement {
         for p in parts {
             switch p {
             case .text(let s): out += s
-            case .child(let i): out += elements[i].textContent
+            case .child(let i): if i < elements.count { out += elements[i].textContent }
             }
         }
         return out
@@ -71,6 +71,13 @@ public enum XML {
 
     public static func parse(_ data: [UInt8]) throws -> XElement {
         guard !data.isEmpty else { throw XMLError.invalid }
+        // Only plain ASCII-compatible (UTF-8) input is accepted: libxml2 autodetects
+        // UTF-16/32/EBCDIC, which would slip past the text scan below.
+        if data.contains(0) { throw XMLError.invalid }
+        var start = 0
+        if data.count >= 3, data[0] == 0xEF, data[1] == 0xBB, data[2] == 0xBF { start = 3 }
+        while start < data.count, [0x20, 0x09, 0x0A, 0x0D].contains(data[start]) { start += 1 }
+        guard start < data.count, data[start] == UInt8(ascii: "<") else { throw XMLError.invalid }
         // Reject DTDs/entities up front (billion-laughs, XXE).
         let upper = String(decoding: data, as: UTF8.self).uppercased()
         if upper.contains("<!DOCTYPE") || upper.contains("<!ENTITY") {
@@ -81,7 +88,10 @@ public enum XML {
         parser.shouldResolveExternalEntities = false
         let delegate = Builder()
         parser.delegate = delegate
-        guard parser.parse(), let root = delegate.root else { throw XMLError.invalid }
+        // On Linux parse() can return true despite a recorded error, so check both.
+        let ok = parser.parse() && parser.parserError == nil
+        if let failure = delegate.failure { throw failure }
+        guard ok, let root = delegate.root else { throw XMLError.invalid }
         return root
     }
 
@@ -108,9 +118,35 @@ public enum XML {
     private final class Builder: NSObject, XMLParserDelegate {
         var stack: [XElement] = []
         var root: XElement?
+        var failure: XMLError?
+        static let maxDepth = 256
+
+        private func abort(_ parser: XMLParser, _ error: XMLError) {
+            failure = error
+            parser.abortParsing()
+        }
+
+        func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+            abort(parser, .doctypeNotAllowed)
+        }
+
+        func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String,
+                    publicID: String?, systemID: String?) {
+            abort(parser, .doctypeNotAllowed)
+        }
+
+        func parser(_ parser: XMLParser, foundElementDeclarationWithName elementName: String, model: String) {
+            abort(parser, .doctypeNotAllowed)
+        }
+
+        func parser(_ parser: XMLParser, foundAttributeDeclarationWithName attributeName: String,
+                    forElement elementName: String, type: String?, defaultValue: String?) {
+            abort(parser, .doctypeNotAllowed)
+        }
 
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
                     qualifiedName qName: String?, attributes attributeDict: [String: String]) {
+            if stack.count >= Builder.maxDepth || (stack.isEmpty && root != nil) { abort(parser, .invalid); return }
             var attrs: [String: String] = [:]
             for (k, v) in attributeDict where k != "xmlns" && !k.hasPrefix("xmlns:") {
                 attrs[XML.local(k)] = v
