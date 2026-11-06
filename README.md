@@ -39,7 +39,7 @@ HomeEye talks **directly to your camera on your own Wi-Fi** using the open ONVIF
 
 - **Only talks to your cameras.** HomeEye makes no other network connections: no analytics, no crash reporting, no update checks.
 - **Encrypted logins.** Camera passwords are stored in the iOS Keychain, set to "this device only", so they can't be read out of the device.
-- **Never backed up.** Keychain items marked this-device-only are not included in iCloud or device backups, and are not migrated to a new phone.
+- **Never backed up.** App data is excluded from backup. Keychain items marked this-device-only are never synced to iCloud and can't be restored onto another device.
 - **Local network permission.** iOS asks for "Local Network" access the first time HomeEye looks for or connects to a camera. This is how iOS protects your home network, and HomeEye only uses it to reach the cameras you add.
 - **No third-party code at all.** No SDKs, no packages, no dependencies. The RTSP and ONVIF clients are written in Swift, on top of Apple's own frameworks.
 
@@ -49,7 +49,7 @@ Any camera with **ONVIF Profile S** (live streaming) should work. Pan/tilt needs
 
 | Camera | Status |
 |---|---|
-| TP-Link Tapo C200 | ✅ Tested: stream, pan/tilt, presets, discovery |
+| TP-Link Tapo C200 | ✅ Tested on Android: stream, pan/tilt, presets, discovery (iOS testing pending) |
 | Other Tapo, Reolink, Hikvision, Dahua, Amcrest, … | Should work. Please [report](../../issues) how it goes |
 
 ### Tapo setup
@@ -76,7 +76,7 @@ Requires iOS 17 or newer, iPhone only.
 
 ## Build from source
 
-CI builds the IPA on every push, so you usually don't need to. To build it yourself you need a Mac with Xcode:
+CI builds the IPA on every push to main, so you usually don't need to. To build it yourself you need a Mac with Xcode:
 
 ```sh
 git clone https://github.com/cutamar/HomeEye-ios.git
@@ -104,6 +104,8 @@ docker run --rm -v "$PWD":/w -v homeeye-build:/build -w /w/HomeEyeCore swift:6.0
 To also run the tests against your own camera:
 
 ```sh
+# Host networking works with Docker on Linux (not Docker Desktop).
+# Non-Tapo cameras: add -e HOMEEYE_CAM_PORT=80
 docker run --rm --network host -v "$PWD":/w -v homeeye-build:/build -w /w/HomeEyeCore \
   -e HOMEEYE_CAM_HOST=<camera-ip> -e HOMEEYE_CAM_USER=<user> -e HOMEEYE_CAM_PASS=<password> \
   swift:6.0 swift test --scratch-path /build
