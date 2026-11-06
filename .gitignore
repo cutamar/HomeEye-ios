@@ -1,0 +1,12 @@
+HomeEye.xcodeproj/
+HomeEye/Info.plist
+build/
+DerivedData/
+.build/
+.swiftpm/
+Payload/
+*.ipa
+xcuserdata/
+*.xcworkspace/xcuserdata/
+.DS_Store
+.claude/
