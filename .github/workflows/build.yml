@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-linux:
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test HomeEyeCore
+        run: swift test --package-path HomeEyeCore
+
+  ios:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Test HomeEyeCore (compiles Darwin branches)
+        run: swift test --package-path HomeEyeCore
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build (unsigned)
+        run: |
+          set -euo pipefail
+          xcodebuild -project HomeEye.xcodeproj -scheme HomeEye -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/HomeEye.app Payload/
+          zip -qry HomeEye.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HomeEye-ipa
+          path: HomeEye.ipa
+          if-no-files-found: error
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" HomeEye.ipa --generate-notes
