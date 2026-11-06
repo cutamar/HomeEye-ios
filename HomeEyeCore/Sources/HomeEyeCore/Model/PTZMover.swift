@@ -86,16 +86,19 @@ public final class PTZMover: @unchecked Sendable {
         do {
             switch command {
             case .stop:
-                let wasMoving = moving
-                moving = false
-                lastSent = nil
                 reportedError = false
-                if wasMoving { try await controller.stop() }
+                if moving {
+                    try await controller.stop()
+                    moving = false
+                    lastSent = nil
+                } else {
+                    lastSent = nil
+                }
             case let .move(pan, tilt):
                 if let last = lastSent, last == (pan, tilt) { return }
                 moving = true
-                lastSent = (pan, tilt)
                 try await controller.continuousMove(pan: pan, tilt: tilt)
+                lastSent = (pan, tilt)
             }
         } catch {
             if !reportedError {

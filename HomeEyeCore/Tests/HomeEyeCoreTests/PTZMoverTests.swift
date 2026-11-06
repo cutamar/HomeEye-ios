@@ -6,7 +6,8 @@ private final class FakePTZ: PTZControlling, @unchecked Sendable {
     private var _moves: [(Double, Double)] = []
     private var _stops = 0
     var delayNanos: UInt64 = 50_000_000
-    var failure: Error?
+    var moveFailure: Error?
+    var stopFailure: Error?
 
     var moves: [(Double, Double)] { lock.lock(); defer { lock.unlock() }; return _moves }
     var stops: Int { lock.lock(); defer { lock.unlock() }; return _stops }
@@ -14,12 +15,12 @@ private final class FakePTZ: PTZControlling, @unchecked Sendable {
     func continuousMove(pan: Double, tilt: Double) async throws {
         try await Task.sleep(nanoseconds: delayNanos)
         lock.lock(); _moves.append((pan, tilt)); lock.unlock()
-        if let failure { throw failure }
+        if let moveFailure { throw moveFailure }
     }
 
     func stop() async throws {
         lock.lock(); _stops += 1; lock.unlock()
-        if let failure { throw failure }
+        if let stopFailure { throw stopFailure }
     }
 }
 
@@ -74,7 +75,7 @@ final class PTZMoverTests: XCTestCase {
     func testErrorsReportedOnceUntilStop() async {
         let fake = FakePTZ()
         fake.delayNanos = 1_000_000
-        fake.failure = Boom()
+        fake.moveFailure = Boom()
         let lock = NSLock()
         var errors: [String] = []
         let mover = PTZMover(controller: fake, onError: { m in lock.lock(); errors.append(m); lock.unlock() })
@@ -85,12 +86,49 @@ final class PTZMoverTests: XCTestCase {
         lock.lock(); XCTAssertEqual(errors, ["boom"]); lock.unlock()
         mover.stop()
         await settle()
+        fake.moveFailure = Boom()
         mover.move(pan: 1, tilt: 0)
         await settle()
         lock.lock(); XCTAssertEqual(errors, ["boom", "boom"]); lock.unlock()
     }
 
+    func testFailedStopIsRetried() async {
+        let fake = FakePTZ()
+        fake.delayNanos = 1_000_000
+        let mover = PTZMover(controller: fake, onError: { _ in })
+        mover.move(pan: 0.5, tilt: 0)
+        await settle()
+        fake.stopFailure = Boom()
+        mover.stop()
+        await settle()
+        XCTAssertEqual(fake.stops, 1)
+        fake.stopFailure = nil
+        mover.stop()
+        await settle()
+        XCTAssertEqual(fake.stops, 2)
+        mover.stop()
+        await settle()
+        XCTAssertEqual(fake.stops, 2)
+    }
+
+    func testFailedMoveIsRetriedWithSameValue() async {
+        let fake = FakePTZ()
+        fake.delayNanos = 1_000_000
+        fake.moveFailure = Boom()
+        let mover = PTZMover(controller: fake, onError: { _ in })
+        mover.move(pan: 0.5, tilt: 0)
+        await settle()
+        fake.moveFailure = nil
+        mover.move(pan: 0.5, tilt: 0)
+        await settle()
+        XCTAssertEqual(fake.moves.count, 2)
+        mover.move(pan: 0.5, tilt: 0)
+        await settle()
+        XCTAssertEqual(fake.moves.count, 2)
+    }
+
     func testQuantize() {
+        XCTAssertEqual(JoystickMath.quantize(-0.375), -0.5)
         XCTAssertEqual(JoystickMath.quantize(0.19), 0)
         XCTAssertEqual(JoystickMath.quantize(-0.19), 0)
         XCTAssertEqual(JoystickMath.quantize(0.2), 0.25)
