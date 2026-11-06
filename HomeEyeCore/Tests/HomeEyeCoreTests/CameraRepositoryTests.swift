@@ -101,4 +101,53 @@ final class CameraRepositoryTests: XCTestCase {
         c.mainPath = "live"
         XCTAssertEqual(c.rtspURL(hd: true), "rtsp://[fe80::1]:554/live")
     }
+
+    /// Makes the next save fail by putting a directory where cameras.json goes.
+    private func breakSaving() throws {
+        let file = dir.appendingPathComponent("cameras.json")
+        try? FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+    }
+
+    func testFailedSaveOnUpsertRestoresPasswordAndList() throws {
+        let secrets = InMemorySecretStore()
+        let repo = CameraRepository(directory: dir, secrets: secrets)
+        try repo.upsert(Camera(id: "a", name: "One", host: "h"), password: "old")
+        try breakSaving()
+        XCTAssertThrowsError(try repo.upsert(Camera(id: "a", name: "New", host: "h"), password: "new"))
+        XCTAssertEqual(repo.cameras.map(\.name), ["One"])
+        XCTAssertEqual(secrets.password(for: "a"), "old")
+        XCTAssertThrowsError(try repo.upsert(Camera(id: "b", name: "B", host: "h"), password: "pb"))
+        XCTAssertEqual(repo.cameras.count, 1)
+        XCTAssertNil(secrets.password(for: "b"))
+    }
+
+    func testFailedSaveOnDeleteLeavesEverythingUnchanged() throws {
+        let secrets = InMemorySecretStore()
+        let repo = CameraRepository(directory: dir, secrets: secrets)
+        try repo.upsert(Camera(id: "a", name: "One", host: "h"), password: "p")
+        let thumb = repo.thumbnailURL(for: "a")
+        try FileManager.default.createDirectory(at: thumb.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([1]).write(to: thumb)
+        try breakSaving()
+        repo.delete(id: "a")
+        XCTAssertEqual(repo.cameras.count, 1)
+        XCTAssertEqual(secrets.password(for: "a"), "p")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: thumb.path))
+    }
+
+    func testThrowingSecretStoreLeavesListUnchanged() throws {
+        let repo = CameraRepository(directory: dir, secrets: FailingSecretStore())
+        XCTAssertThrowsError(try repo.upsert(Camera(id: "a", name: "One", host: "h"), password: "p"))
+        XCTAssertTrue(repo.cameras.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("cameras.json").path))
+    }
+}
+
+private final class FailingSecretStore: SecretStore {
+    struct Failure: Error {}
+    func password(for id: String) -> String? { nil }
+    func setPassword(_ p: String, for id: String) throws { throw Failure() }
+    func deletePassword(for id: String) {}
+    func deleteAll() {}
 }

@@ -25,6 +25,7 @@ public final class CameraRepository {
     }
 
     public func upsert(_ c: Camera, password: String) throws {
+        let oldPassword = secrets.password(for: c.id)
         try secrets.setPassword(password, for: c.id)
         var updated = cameras
         if let i = updated.firstIndex(where: { $0.id == c.id }) {
@@ -32,15 +33,30 @@ public final class CameraRepository {
         } else {
             updated.append(c)
         }
-        try save(updated)
+        do {
+            try save(updated)
+        } catch {
+            if let oldPassword {
+                try? secrets.setPassword(oldPassword, for: c.id)
+            } else {
+                secrets.deletePassword(for: c.id)
+            }
+            throw error
+        }
         cameras = updated
     }
 
+    /// On a failed save, state (list, secret, thumbnail) is left unchanged.
     public func delete(id: String) {
-        cameras.removeAll { $0.id == id }
+        let updated = cameras.filter { $0.id != id }
+        do {
+            try save(updated)
+        } catch {
+            return
+        }
+        cameras = updated
         secrets.deletePassword(for: id)
         try? FileManager.default.removeItem(at: thumbnailURL(for: id))
-        try? save(cameras)
     }
 
     public func password(for id: String) -> String {
