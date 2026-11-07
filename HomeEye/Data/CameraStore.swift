@@ -7,6 +7,9 @@ import HomeEyeCore
 final class CameraStore: ObservableObject {
     @Published private(set) var cameras: [Camera] = []
     @Published private(set) var thumbnailVersion = 0
+    /// Bumped per camera on every successful save, so open screens restart even when only
+    /// the password changed. `pinDigest` deliberately doesn't bump it.
+    @Published private(set) var revisions: [String: Int] = [:]
 
     private let repo: CameraRepository
 
@@ -47,6 +50,7 @@ final class CameraStore: ObservableObject {
             camera.authPinnedDigest = nil
         }
         try repo.upsert(camera, password: password)
+        revisions[camera.id, default: 0] += 1
     }
 
     /// Remembers that this camera authenticated with Digest so Basic is refused from now on.
