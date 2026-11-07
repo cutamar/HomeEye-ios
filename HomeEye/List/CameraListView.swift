@@ -109,6 +109,7 @@ struct CameraListView: View {
 struct CameraRow: View {
     @EnvironmentObject private var store: CameraStore
     let camera: Camera
+    @State private var thumbnailImage: UIImage?
 
     private var subtitle: String {
         if let model = camera.model, !model.isEmpty {
@@ -123,7 +124,13 @@ struct CameraRow: View {
                 .frame(width: 96)
                 .aspectRatio(16.0 / 9.0, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .id(store.thumbnailVersion)
+                .task(id: store.thumbnailVersion) {
+                    let path = store.thumbnailURL(for: camera.id).path
+                    let image = await Task.detached(priority: .utility) {
+                        UIImage(contentsOfFile: path)
+                    }.value
+                    thumbnailImage = image
+                }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(camera.name)
@@ -141,7 +148,7 @@ struct CameraRow: View {
                 Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("Pan and tilt")
+                    .accessibilityLabel("Can pan and tilt")
             }
         }
         .padding(.vertical, 4)
@@ -149,7 +156,7 @@ struct CameraRow: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        if let image = store.thumbnail(for: camera.id) {
+        if let image = thumbnailImage {
             Color.backdrop
                 .overlay {
                     Image(uiImage: image)
