@@ -3,9 +3,14 @@ import HomeEyeCore
 
 @main
 struct HomeEyeApp: App {
+    @StateObject private var store = CameraStore()
+
     var body: some Scene {
         WindowGroup {
-            Text("HomeEye \(HomeEyeCoreInfo.version)")
+            NavigationStack {
+                CameraListView()
+            }
+            .environmentObject(store)
         }
     }
 }

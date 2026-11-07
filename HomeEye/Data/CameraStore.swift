@@ -50,6 +50,10 @@ final class CameraStore: ObservableObject {
         thumbnailVersion += 1
     }
 
+    func thumbnailURL(for id: String) -> URL {
+        repo.thumbnailURL(for: id)
+    }
+
     func thumbnail(for id: String) -> UIImage? {
         UIImage(contentsOfFile: repo.thumbnailURL(for: id).path)
     }
