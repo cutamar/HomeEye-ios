@@ -29,6 +29,7 @@ final class LiveStream: ObservableObject {
 
     deinit {
         supervisor?.stop()
+        audio.setMuted(true)
     }
 
     /// `refuseBasic` is true for a camera pinned to Digest. `onDigestConfirmed` runs on the main
