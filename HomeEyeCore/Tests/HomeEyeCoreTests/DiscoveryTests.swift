@@ -81,7 +81,11 @@ final class DiscoveryTests: XCTestCase {
         XCTAssertEqual(inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr), 1)
         let bindRes = withUnsafePointer(to: &addr) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #if canImport(Darwin)
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #else
+                Glibc.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #endif
             }
         }
         XCTAssertEqual(bindRes, 0)
@@ -161,7 +165,13 @@ final class DiscoveryTests: XCTestCase {
         addr.sin_family = sa_family_t(AF_INET)
         XCTAssertEqual(inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr), 1)
         _ = withUnsafePointer(to: &addr) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                #if canImport(Darwin)
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #else
+                Glibc.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                #endif
+            }
         }
         var bound = sockaddr_in()
         var blen = socklen_t(MemoryLayout<sockaddr_in>.size)
