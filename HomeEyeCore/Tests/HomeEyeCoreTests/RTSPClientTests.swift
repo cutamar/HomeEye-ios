@@ -10,13 +10,14 @@ final class RTSPClientTests: XCTestCase {
     let idr: [UInt8] = [0x65, 1, 2, 3, 4]
     let slice: [UInt8] = [0x41, 9, 8, 7]
 
-    func sdp(sessionControl: String = "*", videoControl: String = "track1", audio: Bool = true) -> String {
+    func sdp(sessionControl: String = "*", videoControl: String = "track1", audio: Bool = true,
+             audioRtpmap: String = "8 PCMA/8000") -> String {
         var s = "v=0\r\no=- 1 1 IN IP4 192.168.1.10\r\ns=Session\r\nt=0 0\r\na=control:\(sessionControl)\r\n"
         s += "m=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
         s += "a=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAH6o=,aM48gA==\r\n"
         s += "a=control:\(videoControl)\r\n"
         if audio {
-            s += "m=audio 0 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\na=control:track2\r\n"
+            s += "m=audio 0 RTP/AVP 8\r\na=rtpmap:\(audioRtpmap)\r\na=control:track2\r\n"
         }
         return s
     }
@@ -111,7 +112,7 @@ final class RTSPClientTests: XCTestCase {
         XCTAssertEqual(err as? NetError, .closed)
         XCTAssertEqual(stream.requests.map(\.method), ["OPTIONS", "DESCRIBE", "DESCRIBE", "SETUP", "SETUP", "PLAY"])
         XCTAssertTrue(stream.unexpected.isEmpty, "\(stream.unexpected.map(\.method))")
-        XCTAssertEqual(c.infos, [StreamInfo(videoCodec: .h264, audio: .pcma, audioSampleRate: 8000)])
+        XCTAssertEqual(c.infos, [StreamInfo(videoCodec: .h264, audio: .pcma, audioSampleRate: 8000, authScheme: .digest)])
         XCTAssertEqual(c.frames, [
             VideoFrame(codec: .h264, parameterSets: [sps, pps], nalus: [idr], isKeyframe: true, timestamp: 1000),
             VideoFrame(codec: .h264, parameterSets: [sps, pps], nalus: [slice], isKeyframe: false, timestamp: 4000),
@@ -131,6 +132,8 @@ final class RTSPClientTests: XCTestCase {
                 XCTAssertEqual(r.headers["Authorization"], expected)
             }),
             .expect("PLAY", reply: RTSPScript.response(cseq: 5), check: { r in
+                // No Content-Base: aggregate control uses the URL as given.
+                XCTAssertEqual(r.uri, self.url)
                 XCTAssertEqual(r.headers["Session"], "77")
                 XCTAssertEqual(r.headers["Authorization"], expected)
             }),
@@ -138,7 +141,49 @@ final class RTSPClientTests: XCTestCase {
         let (c, err) = runClient(RTSPConfig(url: url, credentials: creds, wantAudio: false), stream)
         XCTAssertEqual(err as? NetError, .closed)
         XCTAssertEqual(stream.requests.map(\.method), ["OPTIONS", "DESCRIBE", "DESCRIBE", "SETUP", "PLAY"])
-        XCTAssertEqual(c.infos, [StreamInfo(videoCodec: .h264, audio: nil, audioSampleRate: 0)])
+        XCTAssertEqual(c.infos, [StreamInfo(videoCodec: .h264, audio: nil, audioSampleRate: 0, authScheme: .basic)])
+    }
+
+    func testRefuseBasicNeverSendsBasicCredentials() {
+        let basic = ("WWW-Authenticate", "Basic realm=\"cam\"")
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(401, "Unauthorized", cseq: 1, headers: [basic])),
+            .expect("DESCRIBE", reply: RTSPScript.response(401, "Unauthorized", cseq: 2, headers: [basic])),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 3, body: sdp())),
+        ], holdOpen: true)
+        let (_, err) = runClient(RTSPConfig(url: url, credentials: creds, refuseBasic: true), stream)
+        XCTAssertEqual(err as? RTSPError, .unauthorized)
+        XCTAssertEqual(stream.requests.map(\.method), ["OPTIONS", "DESCRIBE"])
+        XCTAssertTrue(stream.requests.allSatisfy { $0.headers["Authorization"] == nil })
+        XCTAssertTrue(stream.unexpected.isEmpty)
+    }
+
+    func testRefuseBasicStillAcceptsDigest() {
+        let both = [("WWW-Authenticate", "Basic realm=\"cam\""), ("WWW-Authenticate", "Digest realm=\"cam\", nonce=\"abc123\"")]
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
+            .expect("DESCRIBE", reply: RTSPScript.response(401, "Unauthorized", cseq: 2, headers: both)),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 3, body: sdp(audio: false)), check: { r in
+                self.assertDigest(r)
+            }),
+            .expect("SETUP", reply: RTSPScript.response(cseq: 4, headers: [("Session", "S")])),
+            .expect("PLAY", reply: RTSPScript.response(cseq: 5)),
+        ])
+        let (c, err) = runClient(RTSPConfig(url: url, credentials: creds, refuseBasic: true), stream)
+        XCTAssertEqual(err as? NetError, .closed)
+        XCTAssertEqual(c.infos.map(\.authScheme), [.digest])
+    }
+
+    func testNoAuthReportsNone() {
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 2, body: sdp(audio: false))),
+            .expect("SETUP", reply: RTSPScript.response(cseq: 3, headers: [("Session", "S")])),
+            .expect("PLAY", reply: RTSPScript.response(cseq: 4)),
+        ])
+        let (c, _) = runClient(RTSPConfig(url: url, credentials: creds), stream)
+        XCTAssertEqual(c.infos.map(\.authScheme), [AuthScheme.none])
+        XCTAssertTrue(stream.requests.allSatisfy { $0.headers["Authorization"] == nil })
     }
 
     func testOptions401IsToleratedByAuthenticating() {
@@ -208,39 +253,60 @@ final class RTSPClientTests: XCTestCase {
 
     // MARK: - Host pinning
 
-    func assertRejectsWithoutSetup(contentBase: String?, videoControl: String, file: StaticString = #filePath, line: UInt = #line) {
+    /// Runs a Digest handshake with the given Content-Base / video control and returns the requests.
+    func runHostile(contentBase: String?, videoControl: String, sessionControl: String = "*") -> ([ScriptedRequest], Error?) {
         let challenge = ("WWW-Authenticate", "Digest realm=\"cam\", nonce=\"abc123\"")
         var headers: [(String, String)] = []
         if let cb = contentBase { headers.append(("Content-Base", cb)) }
         let stream = ScriptedStream([
             .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
             .expect("DESCRIBE", reply: RTSPScript.response(401, "Unauthorized", cseq: 2, headers: [challenge])),
-            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 3, headers: headers, body: sdp(videoControl: videoControl))),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 3, headers: headers,
+                                                          body: sdp(sessionControl: sessionControl, videoControl: videoControl, audio: false))),
             .expect("SETUP", reply: RTSPScript.response(cseq: 4, headers: [("Session", "S")])),
             .expect("PLAY", reply: RTSPScript.response(cseq: 5)),
-        ], holdOpen: true)
+        ])
         let (_, err) = runClient(RTSPConfig(url: url, credentials: creds), stream)
-        guard case .protocolError? = err as? RTSPError else {
-            return XCTFail("expected protocolError, got \(String(describing: err))", file: file, line: line)
+        XCTAssertTrue(stream.unexpected.isEmpty)
+        return (stream.requests, err)
+    }
+
+    func assertPinned(contentBase: String?, videoControl: String, sessionControl: String = "*",
+                      setup: String, play: String, file: StaticString = #filePath, line: UInt = #line) {
+        let (reqs, err) = runHostile(contentBase: contentBase, videoControl: videoControl, sessionControl: sessionControl)
+        XCTAssertEqual(err as? NetError, .closed, file: file, line: line)
+        XCTAssertEqual(reqs.map(\.method), ["OPTIONS", "DESCRIBE", "DESCRIBE", "SETUP", "PLAY"], file: file, line: line)
+        XCTAssertEqual(reqs.dropFirst(3).map(\.uri), [setup, play], file: file, line: line)
+        for r in reqs.dropFirst(2) {
+            XCTAssertEqual(RTSPURL.parse(r.uri), RTSPURL(host: "192.168.1.10", port: 554), file: file, line: line)
+            assertDigest(r, file: file, line: line)
         }
-        XCTAssertEqual(stream.requests.map(\.method), ["OPTIONS", "DESCRIBE", "DESCRIBE"], file: file, line: line)
-        XCTAssertTrue(stream.unexpected.isEmpty, file: file, line: line)
     }
 
-    func testHostileControlToOtherHostIsRejected() {
-        assertRejectsWithoutSetup(contentBase: nil, videoControl: "rtsp://evil.example/track1")
+    func testHostileControlToOtherHostIsPinnedToCamera() {
+        assertPinned(contentBase: nil, videoControl: "rtsp://evil.example/track1?x=1",
+                     setup: "rtsp://192.168.1.10:554/track1?x=1", play: url)
     }
 
-    func testHostileControlToOtherPortIsRejected() {
-        assertRejectsWithoutSetup(contentBase: nil, videoControl: "rtsp://192.168.1.10:8554/track1")
+    func testHostileControlToOtherPortIsPinnedToCamera() {
+        assertPinned(contentBase: nil, videoControl: "rtsp://192.168.1.10:8554/track1",
+                     setup: "rtsp://192.168.1.10:554/track1", play: url)
     }
 
-    func testHostileContentBaseIsRejected() {
-        assertRejectsWithoutSetup(contentBase: "rtsp://evil.example/stream1/", videoControl: "track1")
+    func testHostileContentBaseIsPinnedToCamera() {
+        assertPinned(contentBase: "rtsp://user:pw@evil.example:9999/stream1/", videoControl: "track1",
+                     setup: "rtsp://192.168.1.10:554/stream1/track1", play: "rtsp://192.168.1.10:554/stream1/")
+    }
+
+    func testHostileSessionControlIsPinnedToCamera() {
+        assertPinned(contentBase: nil, videoControl: "track1", sessionControl: "rtsps://evil.example",
+                     setup: url + "/track1", play: "rtsp://192.168.1.10:554")
     }
 
     func testControlWithSpacesIsRejected() {
-        assertRejectsWithoutSetup(contentBase: nil, videoControl: "track1 RTSP/1.0\r\nX: y")
+        let (reqs, err) = runHostile(contentBase: nil, videoControl: "track1 RTSP/1.0\r\nX: y")
+        guard case .protocolError? = err as? RTSPError else { return XCTFail("\(String(describing: err))") }
+        XCTAssertEqual(reqs.map(\.method), ["OPTIONS", "DESCRIBE", "DESCRIBE"])
     }
 
     func testAbsoluteControlOnSameHostIsAccepted() {
@@ -307,6 +373,34 @@ final class RTSPClientTests: XCTestCase {
         let (c, err) = runClient(RTSPConfig(url: url), stream)
         XCTAssertEqual(err as? NetError, .closed)
         XCTAssertEqual(c.infos, [StreamInfo(videoCodec: .h264, audio: nil, audioSampleRate: 0)])
+    }
+
+    func audioInfo(rtpmap: String) -> [StreamInfo] {
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 2, body: sdp(audioRtpmap: rtpmap))),
+            .expect("SETUP", reply: RTSPScript.response(cseq: 3, headers: [("Session", "S")])),
+            .expect("SETUP", reply: RTSPScript.response(cseq: 4, headers: [("Session", "S")])),
+            .expect("PLAY", reply: RTSPScript.response(cseq: 5)),
+        ])
+        return runClient(RTSPConfig(url: url), stream).0.infos
+    }
+
+    func testAudioSampleRateLimitedToG711Rates() {
+        XCTAssertEqual(audioInfo(rtpmap: "8 PCMA/16000").map(\.audioSampleRate), [16000])
+        XCTAssertEqual(audioInfo(rtpmap: "8 PCMA/44100").map(\.audioSampleRate), [8000])
+        XCTAssertEqual(audioInfo(rtpmap: "8 PCMA/8000").map(\.audioSampleRate), [8000])
+    }
+
+    func testAudioSetupProtocolErrorIsFatal() {
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 2, body: sdp())),
+            .expect("SETUP", reply: RTSPScript.response(cseq: 3, headers: [("Session", "S")])),
+            .expect("SETUP", reply: Array("RTSP/1.0 200 OK\r\nCSeq: 4\r\nContent-Length: 999999999\r\n\r\n".utf8)),
+        ], holdOpen: true)
+        let (_, err) = runClient(RTSPConfig(url: url), stream)
+        guard case .protocolError? = err as? RTSPError else { return XCTFail("\(String(describing: err))") }
     }
 
     func testTruncatedInterleavedFrameAndGarbageDoNotTrap() {

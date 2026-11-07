@@ -6,14 +6,18 @@ public struct RTSPConfig {
     public var connectTimeout: TimeInterval
     public var readTimeout: TimeInterval
     public var wantAudio: Bool
+    /// When true, a camera that only offers Basic auth is treated as `.unauthorized`
+    /// (credentials are never sent in the clear). Set it once the camera is known to use Digest.
+    public var refuseBasic: Bool
 
     public init(url: String, credentials: Credentials? = nil, connectTimeout: TimeInterval = 8,
-                readTimeout: TimeInterval = 8, wantAudio: Bool = true) {
+                readTimeout: TimeInterval = 8, wantAudio: Bool = true, refuseBasic: Bool = false) {
         self.url = url
         self.credentials = credentials
         self.connectTimeout = connectTimeout
         self.readTimeout = readTimeout
         self.wantAudio = wantAudio
+        self.refuseBasic = refuseBasic
     }
 }
 
@@ -25,16 +29,25 @@ public enum RTSPError: Error, Equatable {
     case protocolError(String)
 }
 
+/// Authentication scheme the session ended up using.
+public enum AuthScheme: Equatable {
+    case none
+    case basic
+    case digest
+}
+
 public struct StreamInfo: Equatable {
     public let videoCodec: VideoCodec
     public let audio: AudioCodec?
     /// 0 when there is no audio.
     public let audioSampleRate: Int
+    public let authScheme: AuthScheme
 
-    public init(videoCodec: VideoCodec, audio: AudioCodec?, audioSampleRate: Int) {
+    public init(videoCodec: VideoCodec, audio: AudioCodec?, audioSampleRate: Int, authScheme: AuthScheme = .none) {
         self.videoCodec = videoCodec
         self.audio = audio
         self.audioSampleRate = audioSampleRate
+        self.authScheme = authScheme
     }
 }
 
@@ -110,6 +123,7 @@ public final class RTSPClient {
     private let lock = NSLock()
     private var cseq = 0
     private var authenticator: Authenticator?
+    private var authScheme: AuthScheme = .none
     private var session: String?
     private var closed = false
 
@@ -190,8 +204,7 @@ public final class RTSPClient {
     /// Returns the session timeout in seconds.
     private func handshake(onInfo: (StreamInfo) -> Void, onVideo: (VideoFrame) -> Void,
                            onAudio: (AudioPacket) -> Void) throws -> Int {
-        let url = config.url
-        try checkURI(url)
+        let url = try pinToCamera(config.url)
 
         let options = try exchange("OPTIONS", uri: url, headers: [], onVideo: onVideo, onAudio: onAudio)
         if options.status == 401 {
@@ -204,7 +217,9 @@ public final class RTSPClient {
 
         let describe = try request("DESCRIBE", uri: url, headers: [("Accept", "application/sdp")],
                                    onVideo: onVideo, onAudio: onAudio)
-        var base = describe.headers["Content-Base"] ?? describe.headers["Content-Location"] ?? url
+        let headerBase = try (describe.headers["Content-Base"] ?? describe.headers["Content-Location"]).map(pinToCamera)
+        // Relative controls resolve against a base with a trailing slash.
+        var base = headerBase ?? url
         if !base.hasSuffix("/") { base += "/" }
 
         let sdp = SessionDescription.parse(String(decoding: describe.body, as: UTF8.self))
@@ -217,8 +232,7 @@ public final class RTSPClient {
         let videoCodec: VideoCodec = video.encoding == "H265" ? .h265 : .h264
 
         // Video SETUP
-        let videoURI = resolveControl(base: base, control: video.control)
-        try checkURI(videoURI)
+        let videoURI = try pinToCamera(resolveControl(base: base, control: video.control))
         let setup = try request("SETUP", uri: videoURI,
                                 headers: [("Transport", "RTP/AVP/TCP;unicast;interleaved=0-1")],
                                 onVideo: onVideo, onAudio: onAudio)
@@ -235,8 +249,7 @@ public final class RTSPClient {
 
         // Optional audio SETUP
         if config.wantAudio, let audio = sdp.audio, let codec = AudioCodec(rawValue: audio.encoding) {
-            let audioURI = resolveControl(base: base, control: audio.control)
-            try checkURI(audioURI)
+            let audioURI = try pinToCamera(resolveControl(base: base, control: audio.control))
             do {
                 let r = try request("SETUP", uri: audioURI,
                                     headers: [("Transport", "RTP/AVP/TCP;unicast;interleaved=2-3")],
@@ -245,33 +258,48 @@ public final class RTSPClient {
                 if ch != videoChannel {
                     audioChannel = ch
                     audioCodec = codec
-                    audioSampleRate = audio.clockRate > 0 ? audio.clockRate : 8000
+                    audioSampleRate = audio.clockRate == 16000 ? 16000 : 8000
                 }
-            } catch is RTSPError {
+            } catch RTSPError.badStatus, RTSPError.unauthorized {
                 // Audio is optional; keep going with video only.
             }
         }
 
         // PLAY
-        let playURI = resolveControl(base: base, control: sdp.sessionControl)
-        try checkURI(playURI)
+        // Aggregate control without Content-Base uses the URL as given (as live555/FFmpeg do).
+        let playURI: String
+        if let c = sdp.sessionControl, !c.isEmpty, c != "*" {
+            playURI = try pinToCamera(resolveControl(base: base, control: c))
+        } else {
+            playURI = headerBase == nil ? url : base
+        }
         lock.lock()
         sessionURI = playURI
+        let scheme = authScheme
         lock.unlock()
-        onInfo(StreamInfo(videoCodec: videoCodec, audio: audioCodec, audioSampleRate: audioCodec == nil ? 0 : audioSampleRate))
+        onInfo(StreamInfo(videoCodec: videoCodec, audio: audioCodec,
+                          audioSampleRate: audioCodec == nil ? 0 : audioSampleRate, authScheme: scheme))
         _ = try request("PLAY", uri: playURI, headers: [("Range", "npt=0.000-")], onVideo: onVideo, onAudio: onAudio)
         return timeout
     }
 
-    /// Rejects URIs that would inject into the request line or point at a different camera.
-    private func checkURI(_ uri: String) throws {
-        guard !uri.unicodeScalars.contains(where: { $0.value <= 0x20 || $0.value == 0x7f }) else {
+    /// Rejects URIs that would inject into the request line. An absolute URL naming another
+    /// host or port is rewritten to the camera's host:port (path and query kept), so request
+    /// lines and Digest `uri` values only ever name the configured camera.
+    private func pinToCamera(_ uri: String) throws -> String {
+        guard !uri.isEmpty, !uri.unicodeScalars.contains(where: { $0.value <= 0x20 || $0.value == 0x7f }) else {
             throw RTSPError.protocolError("invalid request URI")
         }
         guard let target = target else { throw RTSPError.protocolError("invalid camera URL") }
-        guard RTSPURL.parse(uri) == target else {
-            throw RTSPError.protocolError("control URL points to a different host")
+        if RTSPURL.parse(uri) == target { return uri }
+        let lower = uri.lowercased()
+        guard let scheme = ["rtsp://", "rtsps://"].first(where: { lower.hasPrefix($0) }) else {
+            throw RTSPError.protocolError("unsupported control URL")
         }
+        let rest = uri.dropFirst(scheme.count)
+        let tail = rest.drop { $0 != "/" && $0 != "?" && $0 != "#" }
+        let host = target.host.contains(":") ? "[\(target.host)]" : target.host
+        return "rtsp://\(host):\(target.port)\(tail)"
     }
 
     private func authenticate(from response: Response) throws {
@@ -279,8 +307,18 @@ public final class RTSPClient {
               let challenge = AuthChallenge.parse(response.headers.all("WWW-Authenticate")) else {
             throw RTSPError.unauthorized
         }
+        let scheme: AuthScheme
+        switch challenge {
+        case .basic:
+            // parse() prefers Digest, so this means the camera offered Basic only.
+            if config.refuseBasic { throw RTSPError.unauthorized }
+            scheme = .basic
+        case .digest:
+            scheme = .digest
+        }
         lock.lock()
         authenticator = Authenticator(credentials: creds, challenge: challenge)
+        authScheme = scheme
         lock.unlock()
     }
 

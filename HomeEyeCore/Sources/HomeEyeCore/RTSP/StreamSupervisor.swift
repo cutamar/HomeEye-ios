@@ -66,24 +66,44 @@ public final class StreamSupervisor: @unchecked Sendable {
         if !isStopped { onStatus?(status) }
     }
 
+    static let maxAuthRetryDelay: TimeInterval = 60
+
+    /// Doubles the login-failure delay, capped at 60 s (never below the base delay).
+    static func nextAuthDelay(after current: TimeInterval, base: TimeInterval) -> TimeInterval {
+        min(current * 2, max(maxAuthRetryDelay, base))
+    }
+
+    /// Test hook: called with each retry delay before sleeping.
+    var onRetryDelay: ((TimeInterval) -> Void)?
+
     private func loop() {
         var first = true
+        // Login failures back off exponentially so a wrong password doesn't hammer the camera.
+        var authDelay = retryDelay
         while !isStopped {
             if first { emit(.connecting) }
             first = false
+            var delay = retryDelay
+            var wentLive = false
             do {
-                try attempt()
+                try attempt(wentLive: &wentLive)
             } catch {
                 if isStopped { break }
+                if wentLive { authDelay = retryDelay }
+                if case RTSPError.unauthorized = error {
+                    delay = authDelay
+                    authDelay = Self.nextAuthDelay(after: authDelay, base: retryDelay)
+                }
                 emit(.retrying(Self.friendlyMessage(for: error)))
             }
             if isStopped { break }
-            _ = wake.wait(timeout: .now() + retryDelay)
+            onRetryDelay?(delay)
+            _ = wake.wait(timeout: .now() + delay)
         }
     }
 
     /// One connect-and-run attempt. Returns normally only when stopped.
-    private func attempt() throws {
+    private func attempt(wentLive: inout Bool) throws {
         guard let url = RTSPURL.parse(config.url) else { throw RTSPError.protocolError("invalid URL") }
         let stream = try connector(url.host, url.port, config.connectTimeout)
         defer { stream.close() }
@@ -102,13 +122,12 @@ public final class StreamSupervisor: @unchecked Sendable {
             lock.unlock()
         }
 
-        var live = false
         try c.run(
             onInfo: { info in if !isStopped { onInfo?(info) } },
             onVideo: { frame in
                 if isStopped { return }
-                if !live {
-                    live = true
+                if !wentLive {
+                    wentLive = true
                     emit(.live)
                 }
                 onVideo?(frame)
