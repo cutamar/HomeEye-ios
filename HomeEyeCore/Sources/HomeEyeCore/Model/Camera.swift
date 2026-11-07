@@ -13,6 +13,9 @@ public struct Camera: Codable, Identifiable, Hashable {
     public var hasPtz: Bool
     public var invertPan: Bool
     public var invertTilt: Bool
+    /// Set once a stream authenticated with Digest; from then on Basic is refused.
+    /// Cleared only when the user edits host, username or password.
+    public var authPinnedDigest: Bool?
 
     public init(
         id: String = UUID().uuidString,
@@ -26,7 +29,8 @@ public struct Camera: Codable, Identifiable, Hashable {
         model: String? = nil,
         hasPtz: Bool = true,
         invertPan: Bool = false,
-        invertTilt: Bool = false
+        invertTilt: Bool = false,
+        authPinnedDigest: Bool? = nil
     ) {
         self.id = id
         self.name = name
@@ -40,11 +44,12 @@ public struct Camera: Codable, Identifiable, Hashable {
         self.hasPtz = hasPtz
         self.invertPan = invertPan
         self.invertTilt = invertTilt
+        self.authPinnedDigest = authPinnedDigest
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, host, onvifPort, rtspPort, username, mainPath, subPath, model
-        case hasPtz, invertPan, invertTilt
+        case hasPtz, invertPan, invertTilt, authPinnedDigest
     }
 
     public init(from decoder: Decoder) throws {
@@ -62,6 +67,7 @@ public struct Camera: Codable, Identifiable, Hashable {
         hasPtz = try c.decodeIfPresent(Bool.self, forKey: .hasPtz) ?? true
         invertPan = try c.decodeIfPresent(Bool.self, forKey: .invertPan) ?? false
         invertTilt = try c.decodeIfPresent(Bool.self, forKey: .invertTilt) ?? false
+        authPinnedDigest = try c.decodeIfPresent(Bool.self, forKey: .authPinnedDigest)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -78,6 +84,7 @@ public struct Camera: Codable, Identifiable, Hashable {
         try c.encode(hasPtz, forKey: .hasPtz)
         try c.encode(invertPan, forKey: .invertPan)
         try c.encode(invertTilt, forKey: .invertTilt)
+        try c.encodeIfPresent(authPinnedDigest, forKey: .authPinnedDigest)
     }
 
     public func streamPath(hd: Bool) -> String {

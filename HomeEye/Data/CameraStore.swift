@@ -39,7 +39,22 @@ final class CameraStore: ObservableObject {
 
     func save(_ camera: Camera, password: String) throws {
         defer { cameras = repo.cameras }
+        var camera = camera
+        // Editing host or credentials drops the Digest pin; nothing else ever does.
+        if let old = repo.camera(id: camera.id),
+           old.host != camera.host || old.username != camera.username
+            || repo.password(for: camera.id) != password {
+            camera.authPinnedDigest = nil
+        }
         try repo.upsert(camera, password: password)
+    }
+
+    /// Remembers that this camera authenticated with Digest so Basic is refused from now on.
+    func pinDigest(id: String) {
+        guard var camera = repo.camera(id: id), camera.authPinnedDigest != true else { return }
+        camera.authPinnedDigest = true
+        try? repo.upsert(camera, password: repo.password(for: id))
+        cameras = repo.cameras
     }
 
     /// Repository delete is non-throwing and leaves state unchanged if saving fails,
