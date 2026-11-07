@@ -109,6 +109,7 @@ final class StreamSupervisorTests: XCTestCase {
         let sup = StreamSupervisor(config: RTSPConfig(url: url), retryDelay: d) { _, _, _ in
             rec.connected() == 3 ? self.liveStream(holdOpen: false) : self.unauthorizedStream()
         }
+        sup.minAuthRetryDelay = d
         let enough = expectation(description: "six delays")
         sup.onRetryDelay = { delay in
             lock.lock()
@@ -135,6 +136,27 @@ final class StreamSupervisorTests: XCTestCase {
         for _ in 0..<6 { delays.append(StreamSupervisor.nextAuthDelay(after: delays.last!, base: 3)) }
         XCTAssertEqual(delays, [3, 6, 12, 24, 48, 60, 60])
         XCTAssertEqual(StreamSupervisor.nextAuthDelay(after: 90, base: 90), 90)
+        XCTAssertEqual(StreamSupervisor.nextAuthDelay(after: 0, base: 0), 1)
+    }
+
+    func testZeroRetryDelayStillFloorsAuthBackoff() {
+        let sup = StreamSupervisor(config: RTSPConfig(url: url), retryDelay: 0) { _, _, _ in self.unauthorizedStream() }
+        let lock = NSLock()
+        var delays: [TimeInterval] = []
+        let first = expectation(description: "first delay")
+        sup.onRetryDelay = { delay in
+            lock.lock()
+            delays.append(delay)
+            if delays.count == 1 { first.fulfill() }
+            lock.unlock()
+        }
+        sup.start()
+        wait(for: [first], timeout: 2)
+        sup.stop()
+        XCTAssertTrue(sup.waitForExit(timeout: 0.5))
+        lock.lock()
+        XCTAssertEqual(delays, [1])
+        lock.unlock()
     }
 
     func testFriendlyMessages() {
