@@ -56,6 +56,7 @@ private struct LiveScreen: View {
     @State private var presetName = ""
     @State private var deleting: Preset?
     @State private var backgrounded = false
+    @State private var joystickActive = false
 
     init(camera: Camera, onEdit: @escaping () -> Void) {
         self.camera = camera
@@ -200,10 +201,11 @@ private struct LiveScreen: View {
         }
         .onChange(of: fullscreen) {
             overlayVisible = true
+            joystickActive = false
         }
         // In fullscreen, fade the controls out after a few seconds without interaction.
-        .task(id: "\(fullscreen)-\(overlayVisible)-\(interaction)") {
-            guard fullscreen && overlayVisible else { return }
+        .task(id: "\(fullscreen)-\(overlayVisible)-\(interaction)-\(joystickActive)") {
+            guard fullscreen && overlayVisible && !joystickActive else { return }
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.25)) { overlayVisible = false }
@@ -293,10 +295,14 @@ private struct LiveScreen: View {
                     JoystickView(size: 148, knob: 56, translucent: true,
                                  onMove: { x, y in
                                      overlayVisible = true
+                                     joystickActive = true
                                      interaction += 1
                                      model.move(x: x, y: y)
                                  },
-                                 onRelease: { model.release() })
+                                 onRelease: {
+                                     joystickActive = false
+                                     model.release()
+                                 })
                 }
                 .padding(.leading, 16)
                 .padding(.trailing, 24)
