@@ -309,14 +309,42 @@ final class RTSPClientTests: XCTestCase {
         XCTAssertEqual(reqs.map(\.method), ["OPTIONS", "DESCRIBE", "DESCRIBE"])
     }
 
-    func testAbsoluteControlOnSameHostIsAccepted() {
+    func testAbsoluteControlOnSameHostIsNormalised() {
         let stream = ScriptedStream([
             .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
-            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 2, body: sdp(videoControl: "RTSP://192.168.1.10/stream1/track1", audio: false))),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 2, body: sdp(videoControl: "RTSP://admin:pw@192.168.1.10/stream1/track1", audio: false))),
             .expect("SETUP", reply: RTSPScript.response(cseq: 3, headers: [("Session", "S")]), check: { r in
-                XCTAssertEqual(r.uri, "RTSP://192.168.1.10/stream1/track1")
+                XCTAssertEqual(r.uri, "rtsp://192.168.1.10:554/stream1/track1")
             }),
             .expect("PLAY", reply: RTSPScript.response(cseq: 4)),
+        ])
+        let (_, err) = runClient(RTSPConfig(url: url), stream)
+        XCTAssertEqual(err as? NetError, .closed)
+        XCTAssertEqual(stream.requests.map(\.method), ["OPTIONS", "DESCRIBE", "SETUP", "PLAY"])
+    }
+
+    func testCameraURLIsNormalised() {
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(cseq: 1), check: { r in
+                XCTAssertEqual(r.uri, "rtsp://cam.local:554/stream1")
+            }),
+            .expect("DESCRIBE", reply: RTSPScript.response(404, "Not Found", cseq: 2)),
+        ], holdOpen: true)
+        _ = runClient(RTSPConfig(url: "RTSP://user:pw@Cam.Local/stream1"), stream)
+        XCTAssertEqual(stream.requests.map(\.uri), ["rtsp://cam.local:554/stream1", "rtsp://cam.local:554/stream1"])
+    }
+
+    func testAggregatePlayUsesContentBaseAsReceived() {
+        let stream = ScriptedStream([
+            .expect("OPTIONS", reply: RTSPScript.response(cseq: 1)),
+            .expect("DESCRIBE", reply: RTSPScript.response(cseq: 2, headers: [("Content-Base", "rtsp://192.168.1.10:554/live")],
+                                                          body: sdp(audio: false))),
+            .expect("SETUP", reply: RTSPScript.response(cseq: 3, headers: [("Session", "S")]), check: { r in
+                XCTAssertEqual(r.uri, "rtsp://192.168.1.10:554/live/track1")
+            }),
+            .expect("PLAY", reply: RTSPScript.response(cseq: 4), check: { r in
+                XCTAssertEqual(r.uri, "rtsp://192.168.1.10:554/live")
+            }),
         ])
         let (_, err) = runClient(RTSPConfig(url: url), stream)
         XCTAssertEqual(err as? NetError, .closed)

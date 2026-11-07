@@ -68,18 +68,21 @@ public final class StreamSupervisor: @unchecked Sendable {
 
     static let maxAuthRetryDelay: TimeInterval = 60
 
-    /// Doubles the login-failure delay, capped at 60 s (never below the base delay).
-    static func nextAuthDelay(after current: TimeInterval, base: TimeInterval) -> TimeInterval {
-        min(current * 2, max(maxAuthRetryDelay, base))
+    /// Doubles the login-failure delay: at least `floor`, capped at 60 s (or `base` if larger).
+    static func nextAuthDelay(after current: TimeInterval, base: TimeInterval, floor: TimeInterval = 1) -> TimeInterval {
+        min(max(current * 2, floor), max(maxAuthRetryDelay, base))
     }
 
     /// Test hook: called with each retry delay before sleeping.
     var onRetryDelay: ((TimeInterval) -> Void)?
+    /// Floor for login-failure delays so retryDelay 0 can't tight-loop. Lowered only by tests; set before `start()`.
+    var minAuthRetryDelay: TimeInterval = 1
 
     private func loop() {
         var first = true
         // Login failures back off exponentially so a wrong password doesn't hammer the camera.
-        var authDelay = retryDelay
+        let authBase = max(retryDelay, minAuthRetryDelay)
+        var authDelay = authBase
         while !isStopped {
             if first { emit(.connecting) }
             first = false
@@ -89,10 +92,10 @@ public final class StreamSupervisor: @unchecked Sendable {
                 try attempt(wentLive: &wentLive)
             } catch {
                 if isStopped { break }
-                if wentLive { authDelay = retryDelay }
+                if wentLive { authDelay = authBase }
                 if case RTSPError.unauthorized = error {
                     delay = authDelay
-                    authDelay = Self.nextAuthDelay(after: authDelay, base: retryDelay)
+                    authDelay = Self.nextAuthDelay(after: authDelay, base: authBase, floor: minAuthRetryDelay)
                 }
                 emit(.retrying(Self.friendlyMessage(for: error)))
             }

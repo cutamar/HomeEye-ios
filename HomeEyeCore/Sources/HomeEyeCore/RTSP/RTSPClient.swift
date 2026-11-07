@@ -266,12 +266,13 @@ public final class RTSPClient {
         }
 
         // PLAY
-        // Aggregate control without Content-Base uses the URL as given (as live555/FFmpeg do).
+        // Aggregate control uses Content-Base/Location as received, else the URL (as live555/FFmpeg do);
+        // the slash-appended base is only for resolving relative controls.
         let playURI: String
         if let c = sdp.sessionControl, !c.isEmpty, c != "*" {
             playURI = try pinToCamera(resolveControl(base: base, control: c))
         } else {
-            playURI = headerBase == nil ? url : base
+            playURI = headerBase ?? url
         }
         lock.lock()
         sessionURI = playURI
@@ -283,15 +284,14 @@ public final class RTSPClient {
         return timeout
     }
 
-    /// Rejects URIs that would inject into the request line. An absolute URL naming another
-    /// host or port is rewritten to the camera's host:port (path and query kept), so request
-    /// lines and Digest `uri` values only ever name the configured camera.
+    /// Rejects URIs that would inject into the request line, and rebuilds every absolute URL as
+    /// `rtsp://<camera host>:<port><path+query>`. Userinfo and any other host or port are dropped,
+    /// so request lines and Digest `uri` values are canonical and only ever name the configured camera.
     private func pinToCamera(_ uri: String) throws -> String {
         guard !uri.isEmpty, !uri.unicodeScalars.contains(where: { $0.value <= 0x20 || $0.value == 0x7f }) else {
             throw RTSPError.protocolError("invalid request URI")
         }
         guard let target = target else { throw RTSPError.protocolError("invalid camera URL") }
-        if RTSPURL.parse(uri) == target { return uri }
         let lower = uri.lowercased()
         guard let scheme = ["rtsp://", "rtsps://"].first(where: { lower.hasPrefix($0) }) else {
             throw RTSPError.protocolError("unsupported control URL")
