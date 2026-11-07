@@ -191,4 +191,14 @@ final class H265DepacketizerTests: XCTestCase {
             _ = d.push(pkt(UInt16(truncatingIfNeeded: i), ts, Bool.random(using: &rng), payload))
         }
     }
+
+    func testManyTinyNALsInAPAreBounded() {
+        let d = H265Depacketizer(parameterSets: sets)
+        // Minimal 2-byte NALs (type 1): 4 bytes per entry.
+        let tiny: [UInt8] = [0x00, 0x02, 0x02, 0x01]
+        let payload: [UInt8] = [0x60, 0x01] + Array((0..<15_000).map { _ in tiny }.joined())
+        XCTAssertTrue(d.push(pkt(1, 1, false, payload)).isEmpty)
+        XCTAssertTrue(d.push(pkt(2, 1, true, slice)).isEmpty)
+        XCTAssertEqual(d.push(pkt(3, 2, true, idr)).first?.nalus, [idr])
+    }
 }

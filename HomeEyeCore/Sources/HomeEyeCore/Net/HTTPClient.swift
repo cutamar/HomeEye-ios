@@ -19,6 +19,7 @@ public enum HTTPClient {
         host: String, port: Int, path: String,
         headers: [(String, String)], body: [UInt8],
         connectTimeout: TimeInterval, readTimeout: TimeInterval,
+        totalTimeout: TimeInterval? = nil,
         connector: (String, Int, TimeInterval) throws -> ByteStream = { try TCPSocket.connect(host: $0, port: $1, timeout: $2) }
     ) throws -> HTTPResponse {
         func isClean(_ s: String) -> Bool {
@@ -26,6 +27,8 @@ public enum HTTPClient {
         }
         guard !path.isEmpty, isClean(path) else { throw NetError.protocolError("invalid path") }
         guard !host.isEmpty, isClean(host) else { throw NetError.protocolError("invalid host") }
+        // Overall deadline (connect included) so a slow-drip server cannot hold us forever.
+        let deadline = Date().addingTimeInterval(totalTimeout ?? (connectTimeout + 4 * readTimeout))
         let stream = try connector(host, port, connectTimeout)
         defer { stream.close() }
         if let tcp = stream as? TCPSocket { tcp.readTimeout = readTimeout }
@@ -39,7 +42,7 @@ public enum HTTPClient {
         head += "Content-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         try stream.write(Array(head.utf8) + body)
 
-        let reader = MessageReader(stream)
+        let reader = MessageReader(stream, deadline: deadline)
         var respHead = try reader.readHead()
         var interim = 0
         while let s = respHead.status, s >= 100, s < 200 {

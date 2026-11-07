@@ -200,4 +200,16 @@ final class H264DepacketizerTests: XCTestCase {
         let f = d.push(pkt(1, 1, true, stap([[0x78, 1, 2], idr])))
         XCTAssertEqual(f.first?.nalus, [idr])
     }
+
+    func testManyTinyNALsInStapAAreBounded() {
+        let d = H264Depacketizer(parameterSets: [sps, pps])
+        // 1-byte NALs (type 1): 3 bytes per entry, ~20k entries per packet.
+        let tiny: [UInt8] = [0x00, 0x01, 0x41]
+        let payload: [UInt8] = [0x78] + Array((0..<20_000).map { _ in tiny }.joined())
+        XCTAssertTrue(d.push(pkt(1, 1, false, payload)).isEmpty)
+        // Cap tripped: state was discarded, so a following non-IDR frame yields nothing.
+        XCTAssertTrue(d.push(pkt(2, 1, true, [0x41, 1])).isEmpty)
+        // Recovers on the next keyframe.
+        XCTAssertEqual(d.push(pkt(3, 2, true, idr)).first?.nalus, [idr])
+    }
 }
