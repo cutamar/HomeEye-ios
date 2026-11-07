@@ -47,6 +47,7 @@ public struct SessionDescription {
     public static func parse(_ text: String) -> SessionDescription {
         var sessionControl: String?
         var media: [SDPMedia] = []
+        var skipping = false
 
         for rawLine in text.split(omittingEmptySubsequences: true, whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -57,13 +58,15 @@ public struct SessionDescription {
             if kind == "m" {
                 // m=<type> <port> <proto> <fmt> ...
                 let parts = value.split(separator: " ", omittingEmptySubsequences: true)
-                guard parts.count >= 4, let pt = Int(parts[3]) else { continue }
+                guard parts.count >= 4, let pt = Int(parts[3]) else { skipping = true; continue }
+                skipping = false
                 var m = SDPMedia(type: parts[0].lowercased(), payloadType: pt, encoding: "", clockRate: 0,
                                  channels: 1, fmtp: [:], control: nil)
                 if pt == 0 { m.encoding = "PCMU"; m.clockRate = 8000 }
                 if pt == 8 { m.encoding = "PCMA"; m.clockRate = 8000 }
                 media.append(m)
             } else if kind == "a" {
+                if skipping { continue }
                 let (name, attrValue) = splitAttribute(value)
                 if name == "control" {
                     if media.isEmpty {
@@ -146,5 +149,7 @@ public func resolveControl(base: String, control: String?) -> String {
     guard let control = control, control != "*", !control.isEmpty else { return base }
     let lower = control.lowercased()
     if lower.hasPrefix("rtsp://") || lower.hasPrefix("rtsps://") { return control }
-    return base + (base.hasSuffix("/") ? "" : "/") + control
+    var relative = Substring(control)
+    while relative.hasPrefix("/") { relative = relative.dropFirst() }
+    return base + (base.hasSuffix("/") ? "" : "/") + relative
 }

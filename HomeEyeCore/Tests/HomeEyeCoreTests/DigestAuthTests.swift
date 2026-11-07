@@ -29,13 +29,37 @@ final class DigestAuthTests: XCTestCase {
     }
 
     func testMD5Sess() {
-        let challenge = AuthChallenge.digest(realm: "r", nonce: "n", opaque: nil, qop: nil, algorithm: "MD5-sess")
+        let challenge = AuthChallenge.digest(realm: "r", nonce: "n", opaque: nil, qop: "auth", algorithm: "MD5-sess")
         let auth = Authenticator(credentials: creds, challenge: challenge, cnonce: "cc")
         let header = auth.authorization(method: "GET", uri: "/")
         let ha1 = MD5.hex("\(MD5.hex("Mufasa:r:Circle Of Life")):n:cc")
         let ha2 = MD5.hex("GET:/")
-        XCTAssertTrue(header.contains("response=\"\(MD5.hex("\(ha1):n:\(ha2)"))\""), header)
+        XCTAssertTrue(header.contains("response=\"\(MD5.hex("\(ha1):n:00000001:cc:auth:\(ha2)"))\""), header)
         XCTAssertTrue(header.contains("algorithm=MD5-sess"))
+    }
+
+    func testHeaderEscapesQuotesAndBackslashes() {
+        let c = Credentials(username: "a\"b\\c", password: "p")
+        let auth = Authenticator(credentials: c, challenge: .digest(realm: "r\"x", nonce: "n", opaque: nil, qop: nil, algorithm: nil))
+        let header = auth.authorization(method: "GET", uri: "/")
+        XCTAssertTrue(header.contains("username=\"a\\\"b\\\\c\""), header)
+        XCTAssertTrue(header.contains("realm=\"r\\\"x\""), header)
+    }
+
+    func testMultipleChallengesInOneValue() {
+        let digest = AuthChallenge.digest(realm: "y", nonce: "n", opaque: nil, qop: nil, algorithm: nil)
+        XCTAssertEqual(AuthChallenge.parse(["Basic realm=\"x\", Digest realm=\"y\", nonce=\"n\""]), digest)
+        XCTAssertEqual(AuthChallenge.parse(["Digest realm=\"y\", nonce=\"n\", Basic realm=\"x\""]), digest)
+    }
+
+    func testUnsupportedAlgorithmSkipped() {
+        XCTAssertEqual(AuthChallenge.parse(["Digest realm=\"y\", nonce=\"n\", algorithm=SHA-256", "Basic realm=\"x\""]), .basic(realm: "x"))
+        XCTAssertNil(AuthChallenge.parse(["Digest realm=\"y\", nonce=\"n\", algorithm=SHA-256"]))
+        XCTAssertNil(AuthChallenge.parse(["Digest realm=\"y\", nonce=\"n\", algorithm=MD5-sess"]))
+    }
+
+    func testNoncelessDigestFallsBackToBasic() {
+        XCTAssertEqual(AuthChallenge.parse(["Digest realm=\"y\"", "Basic realm=\"x\""]), .basic(realm: "x"))
     }
 
     func testBasic() {
@@ -58,6 +82,7 @@ final class DigestAuthTests: XCTestCase {
         XCTAssertNil(AuthChallenge.parse([]))
         XCTAssertNil(AuthChallenge.parse(["Negotiate abc", "Digest realm=\"x\""]))
         XCTAssertNil(AuthChallenge.parse([""]))
-        _ = AuthChallenge.parse(["Digest realm=\"unterminated, nonce=\"x"])
+        // Unterminated quote swallows the rest, so no nonce is found.
+        XCTAssertNil(AuthChallenge.parse(["Digest realm=\"unterminated, nonce=\"x"]))
     }
 }

@@ -73,7 +73,20 @@ final class SDPTests: XCTestCase {
         XCTAssertEqual(SessionDescription.parse("").media.count, 0)
     }
 
+    func testAttributesAfterMalformedMediaLineAreIgnored() {
+        let sdp = "a=control:*\nm=video 0 RTP/AVP 96\na=rtpmap:96 H264/90000\na=control:track1\nm=audio bogus\na=control:evil\na=rtpmap:96 PCMA/8000\na=fmtp:96 x=y\nm=audio 0 RTP/AVP 8\na=control:track2\n"
+        let sd = SessionDescription.parse(sdp)
+        XCTAssertEqual(sd.media.count, 2)
+        XCTAssertEqual(sd.video?.control, "track1")
+        XCTAssertEqual(sd.video?.encoding, "H264")
+        XCTAssertNil(sd.video?.fmtp["x"])
+        XCTAssertEqual(sd.audio?.control, "track2")
+        XCTAssertEqual(SessionDescription.parse("m=bad\na=control:x\n").sessionControl, nil)
+    }
+
     func testResolveControl() {
+        XCTAssertEqual(resolveControl(base: "rtsp://h/s", control: "/track1"), "rtsp://h/s/track1")
+        XCTAssertEqual(resolveControl(base: "rtsp://h/s/", control: "/track1"), "rtsp://h/s/track1")
         XCTAssertEqual(resolveControl(base: "rtsp://h/s", control: nil), "rtsp://h/s")
         XCTAssertEqual(resolveControl(base: "rtsp://h/s", control: "*"), "rtsp://h/s")
         XCTAssertEqual(resolveControl(base: "rtsp://h/s", control: "rtsps://x/y"), "rtsps://x/y")
