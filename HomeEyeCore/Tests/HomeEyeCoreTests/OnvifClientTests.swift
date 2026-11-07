@@ -2,6 +2,7 @@ import XCTest
 @testable import HomeEyeCore
 
 struct RecordedRequest {
+    let host: String
     let port: Int
     let path: String
     let body: String
@@ -34,7 +35,7 @@ final class FakeTransport: SOAPTransport, @unchecked Sendable {
 
     func post(host: String, port: Int, path: String, body: [UInt8], headers: [(String, String)],
               connectTimeout: TimeInterval, timeout: TimeInterval) throws -> HTTPResponse {
-        let req = RecordedRequest(port: port, path: path, body: String(decoding: body, as: UTF8.self), headers: headers)
+        let req = RecordedRequest(host: host, port: port, path: path, body: String(decoding: body, as: UTF8.self), headers: headers)
         let (h, n): (Handler?, Int) = lock.withLock {
             recorded.append(req)
             counts[req.op, default: 0] += 1
@@ -101,6 +102,13 @@ final class OnvifClientTests: XCTestCase {
     func testParsesCameraTime() {
         let d = OnvifClient.parseCameraTime(Fixtures.time)
         XCTAssertEqual(d, ISO8601DateFormatter().date(from: "2026-10-31T09:49:49Z"))
+        func xml(_ y: Int, _ mo: Int, _ d: Int) -> String {
+            "<a><UTCDateTime><Time><Hour>1</Hour><Minute>2</Minute><Second>3</Second></Time><Date><Year>\(y)</Year><Month>\(mo)</Month><Day>\(d)</Day></Date></UTCDateTime></a>"
+        }
+        XCTAssertNotNil(OnvifClient.parseCameraTime(xml(2026, 12, 31)))
+        XCTAssertNil(OnvifClient.parseCameraTime(xml(0, 0, 0)))
+        XCTAssertNil(OnvifClient.parseCameraTime(xml(2026, 13, 1)))
+        XCTAssertNil(OnvifClient.parseCameraTime(xml(2026, 2, 32)))
         XCTAssertNil(OnvifClient.parseCameraTime("<a/>"))
         XCTAssertNil(OnvifClient.parseCameraTime("garbage <<"))
     }
@@ -128,6 +136,7 @@ final class OnvifClientTests: XCTestCase {
         XCTAssertEqual(after.first?.port, 2020)
         XCTAssertEqual(after.last?.path, "/onvif/ptz_service")
         XCTAssertEqual(after.last?.port, 8080)
+        XCTAssertTrue(t.requests.allSatisfy { $0.host == "192.0.2.10" })
     }
 
     func testNoPtzCapability() async throws {
@@ -250,6 +259,20 @@ final class OnvifClientTests: XCTestCase {
         await check(Fixtures.status(500, Fixtures.fault(reason: "Invalid args")), "Camera error: Invalid args")
         await check(Fixtures.status(503, "not xml <<"), "Camera error (HTTP 503)")
         await check(Fixtures.status(500, ""), "Camera error (HTTP 500)")
+    }
+
+    func testInvalidHostIsUnreachable() async {
+        let t = connectedFake()
+        let c = OnvifClient(host: "192.0.2.10\n ", port: 2020, username: "u", password: "p", transport: t)
+        do {
+            try await c.connect()
+            XCTFail("expected error")
+        } catch {
+            XCTAssertEqual(error as? OnvifError, OnvifError("Can't reach camera at 192.0.2.10\n :2020", unreachable: true))
+        }
+        XCTAssertEqual(OnvifClient.map(.protocolError("invalid host"), host: "h", port: 1), OnvifError("Can't reach camera at h:1", unreachable: true))
+        XCTAssertEqual(OnvifClient.map(.protocolError("bad status line"), host: "h", port: 1), OnvifError("Camera sent a reply we couldn't read"))
+        XCTAssertTrue(t.requests.isEmpty)
     }
 
     func testTransportErrorMapping() {

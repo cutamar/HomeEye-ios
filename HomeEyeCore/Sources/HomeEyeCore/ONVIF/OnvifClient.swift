@@ -254,6 +254,9 @@ public final class OnvifClient: @unchecked Sendable {
     private func post(_ ep: Endpoint, _ body: String, auth: Bool) throws -> String {
         let envelope = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope \(Self.ns)><s:Header>\(auth ? securityHeader() : "")</s:Header><s:Body>\(body)</s:Body></s:Envelope>"
         let payload = Array(envelope.utf8)
+        if host.isEmpty || host.unicodeScalars.contains(where: { $0.value <= 0x20 || $0.value == 0x7f }) {
+            throw OnvifError("Can't reach camera at \(host):\(port)", unreachable: true)
+        }
         var headers = [("Content-Type", "application/soap+xml; charset=utf-8")]
         var retried = false
         while true {
@@ -286,6 +289,8 @@ public final class OnvifClient: @unchecked Sendable {
         switch e {
         case .timeout: return OnvifError("Camera at \(host):\(port) didn't answer in time", unreachable: true)
         case .unreachable, .closed, .io: return OnvifError("Can't reach camera at \(host):\(port)", unreachable: true)
+        case .protocolError(let why) where why == "invalid host" || why == "invalid path":
+            return OnvifError("Can't reach camera at \(host):\(port)", unreachable: true)
         case .protocolError: return OnvifError("Camera sent a reply we couldn't read")
         }
     }
@@ -333,7 +338,9 @@ public final class OnvifClient: @unchecked Sendable {
         guard let utc = (try? XML.parse(xml))?.first("UTCDateTime") else { return nil }
         func n(_ tag: String) -> Int? { utc.text(tag).flatMap { Int($0) } }
         guard let y = n("Year"), let mo = n("Month"), let d = n("Day"),
-              let h = n("Hour"), let mi = n("Minute"), let s = n("Second") else { return nil }
+              let h = n("Hour"), let mi = n("Minute"), let s = n("Second"),
+              y >= 1970, (1...12).contains(mo), (1...31).contains(d),
+              (0...23).contains(h), (0...59).contains(mi), (0...60).contains(s) else { return nil }
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(identifier: "UTC")!
         return cal.date(from: DateComponents(timeZone: cal.timeZone, year: y, month: mo, day: d, hour: h, minute: mi, second: s))
