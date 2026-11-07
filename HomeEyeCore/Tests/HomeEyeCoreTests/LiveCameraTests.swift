@@ -5,12 +5,14 @@ import XCTest
 ///   HOMEEYE_CAM_HOST, HOMEEYE_CAM_USER, HOMEEYE_CAM_PASS  (and HOMEEYE_CAM_PORT, default 2020)
 /// HOMEEYE_CAM_MOVE=1 also nudges the camera right and back.
 /// Passwords are never printed.
+/// Note: the wrong-password test sends a bad login, which may count toward the camera's login lockout.
 final class LiveCameraTests: XCTestCase {
     private let env = ProcessInfo.processInfo.environment
 
     private func requireHost() throws -> String {
-        try XCTSkipUnless(env["HOMEEYE_CAM_HOST"] != nil, "HOMEEYE_CAM_HOST not set")
-        return env["HOMEEYE_CAM_HOST"]!
+        let host = env["HOMEEYE_CAM_HOST"] ?? ""
+        try XCTSkipUnless(!host.isEmpty, "HOMEEYE_CAM_HOST not set")
+        return host
     }
 
     private var port: Int { env["HOMEEYE_CAM_PORT"].flatMap { Int($0) } ?? 2020 }
@@ -94,14 +96,27 @@ final class LiveCameraTests: XCTestCase {
                 got.fulfill()
             }
         }
+        defer { supervisor.stop() }
         supervisor.start()
         await fulfillment(of: [got], timeout: 10)
-        supervisor.stop()
     }
 
-    private static func redacted(_ uri: String) -> String {
-        guard let at = uri.firstIndex(of: "@"), let scheme = uri.range(of: "://") else { return uri }
-        return String(uri[..<scheme.upperBound]) + "***@" + String(uri[uri.index(after: at)...])
+    /// Drops all userinfo (everything up to the last '@' in the authority).
+    static func redacted(_ uri: String) -> String {
+        guard let scheme = uri.range(of: "://") else { return uri }
+        let rest = uri[scheme.upperBound...]
+        let authorityEnd = rest.firstIndex(where: { "/?#".contains($0) }) ?? rest.endIndex
+        guard let at = rest[..<authorityEnd].lastIndex(of: "@") else { return uri }
+        return String(uri[..<scheme.upperBound]) + String(rest[rest.index(after: at)...])
+    }
+}
+
+final class RedactionTests: XCTestCase {
+    func testRedactionDropsAllUserinfo() {
+        let out = LiveCameraTests.redacted("rtsp://u:p@ss@10.0.0.5:554/stream1?x=a@b")
+        XCTAssertEqual(out, "rtsp://10.0.0.5:554/stream1?x=a@b")
+        XCTAssertFalse(out.contains("ss"))
+        XCTAssertEqual(LiveCameraTests.redacted("rtsp://10.0.0.5/s"), "rtsp://10.0.0.5/s")
     }
 }
 
