@@ -94,4 +94,32 @@ final class XMLTests: XCTestCase {
         let ok = String(repeating: "<a>", count: 100) + String(repeating: "</a>", count: 100)
         XCTAssertNoThrow(try XML.parse(ok))
     }
+
+    func testFirstAndAllOnDeepWideDocumentAreFast() throws {
+        var xml = String(repeating: "<a>", count: 250)
+        for _ in 0..<2000 { xml += "<w><x>1</x></w>" }
+        xml += String(repeating: "</a>", count: 250)
+        let root = try XML.parse(xml)
+        let start = Date()
+        for _ in 0..<200 { XCTAssertEqual(root.text("x"), "1") }
+        XCTAssertEqual(root.all("x").count, 2000)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
+
+    func testElementCountCap() {
+        let ok = "<r>" + String(repeating: "<i/>", count: 49_000) + "</r>"
+        XCTAssertNoThrow(try XML.parse(ok))
+        let big = "<r>" + String(repeating: "<i/>", count: 50_001) + "</r>"
+        XCTAssertThrowsError(try XML.parse(big)) { XCTAssertEqual($0 as? XMLError, .invalid) }
+    }
+
+    func testNonUTF8DeclaredEncodingRejected() throws {
+        let utf7 = "<?xml version=\"1.0\" encoding=\"UTF-7\"?>+ADw-!DOCTYPE a [+ADw-!ENTITY x +ACI-y+ACI-]+AD4-+ADw-a+AD4-+ACY-x;+ADw-/a+AD4-"
+        XCTAssertThrowsError(try XML.parse(utf7)) { XCTAssertEqual($0 as? XMLError, .invalid) }
+        XCTAssertThrowsError(try XML.parse("<?xml version='1.0' encoding='EBCDIC-US'?><a/>"))
+        XCTAssertThrowsError(try XML.parse("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a/>"))
+        XCTAssertNoThrow(try XML.parse("<?xml version=\"1.0\" encoding=\"utf-8\"?><a/>"))
+        XCTAssertNoThrow(try XML.parse("<?xml version=\"1.0\" encoding=\"US-ASCII\"?><a/>"))
+        XCTAssertNoThrow(try XML.parse("<?xml version=\"1.0\"?><a/>"))
+    }
 }

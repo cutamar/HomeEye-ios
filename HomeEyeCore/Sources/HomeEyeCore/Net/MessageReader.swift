@@ -49,13 +49,28 @@ public final class MessageReader {
     private let stream: ByteStream
     private var buffer: [UInt8] = []
     private var pos = 0
+    private let deadline: Date?
+    private let basePerReadTimeout: TimeInterval
 
-    public init(_ stream: ByteStream) {
+    /// `deadline` bounds the total time spent waiting for data across all reads
+    /// (defeats slow-drip servers); exceeding it throws `.timeout`.
+    public init(_ stream: ByteStream, deadline: Date? = nil) {
         self.stream = stream
+        self.deadline = deadline
+        self.basePerReadTimeout = (stream as? TCPSocket)?.readTimeout ?? 0
     }
 
     /// Refills the buffer; throws `.closed` on EOF.
     private func fill() throws {
+        if let deadline {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { throw NetError.timeout }
+            if let tcp = stream as? TCPSocket {
+                // A zero timeval means "no timeout", so keep a small floor.
+                let base = basePerReadTimeout > 0 ? basePerReadTimeout : remaining
+                tcp.readTimeout = max(0.001, min(base, remaining))
+            }
+        }
         let chunk = try stream.read(maxLength: MessageReader.bufferSize)
         if chunk.isEmpty { throw NetError.closed }
         buffer = chunk

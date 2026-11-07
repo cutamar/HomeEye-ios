@@ -1,5 +1,54 @@
 import XCTest
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 @testable import HomeEyeCore
+
+// File-scope wrappers: inside an XCTestCase, bare names like `bind` resolve to NSObject methods on Darwin.
+private func rawBind(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 {
+    #if canImport(Glibc)
+    return Glibc.bind(fd, addr, len)
+    #else
+    return Darwin.bind(fd, addr, len)
+    #endif
+}
+private func rawListen(_ fd: Int32, _ backlog: Int32) -> Int32 {
+    #if canImport(Glibc)
+    return Glibc.listen(fd, backlog)
+    #else
+    return Darwin.listen(fd, backlog)
+    #endif
+}
+private func rawAccept(_ fd: Int32) -> Int32 {
+    #if canImport(Glibc)
+    return Glibc.accept(fd, nil, nil)
+    #else
+    return Darwin.accept(fd, nil, nil)
+    #endif
+}
+private func rawSend(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int) -> Int {
+    #if canImport(Glibc)
+    return Glibc.send(fd, p, n, sendFlags)
+    #else
+    return Darwin.send(fd, p, n, sendFlags)
+    #endif
+}
+private func rawGetsockname(_ fd: Int32, _ addr: UnsafeMutablePointer<sockaddr>, _ len: UnsafeMutablePointer<socklen_t>) -> Int32 {
+    #if canImport(Glibc)
+    return Glibc.getsockname(fd, addr, len)
+    #else
+    return Darwin.getsockname(fd, addr, len)
+    #endif
+}
+private func rawShutdown(_ fd: Int32) -> Int32 {
+    #if canImport(Glibc)
+    return Glibc.shutdown(fd, shutRdWr)
+    #else
+    return Darwin.shutdown(fd, shutRdWr)
+    #endif
+}
 
 private final class FakeStream: ByteStream {
     var input: [UInt8]
@@ -246,5 +295,65 @@ final class NetTests: XCTestCase {
             XCTAssertEqual(error as? NetError, .closed)
         }
         XCTAssertLessThan(Date().timeIntervalSince(t0), 2)
+    }
+
+    func testCloseDefersFdCloseUntilReadReturns() throws {
+        let server = try TestTCPServer(response: [])
+        defer { server.stop() }
+        let sock = try TCPSocket.connect(host: "127.0.0.1", port: server.port, timeout: 2)
+        sock.readTimeout = 5
+        let t0 = Date()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { sock.close() }
+        _ = try? sock.read(maxLength: 10)
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 2)
+        // After close, further I/O fails with .closed and never touches a recycled fd.
+        XCTAssertThrowsError(try sock.read(maxLength: 1)) { XCTAssertEqual($0 as? NetError, .closed) }
+        XCTAssertThrowsError(try sock.write([1])) { XCTAssertEqual($0 as? NetError, .closed) }
+    }
+
+    func testSlowDripHitsTotalDeadline() throws {
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let lfd = socket(AF_INET, sockStream, 0)
+        XCTAssertGreaterThanOrEqual(lfd, 0)
+        let rc = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { rawBind(lfd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        XCTAssertEqual(rc, 0)
+        XCTAssertEqual(rawListen(lfd, 1), 0)
+        var bound = sockaddr_in()
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &bound) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { rawGetsockname(lfd, $0, &len) }
+        }
+        let port = Int(UInt16(bigEndian: bound.sin_port))
+        let stop = NSLock()
+        var stopped = false
+        Thread {
+            let c = rawAccept(lfd)
+            guard c >= 0 else { return }
+            let head = Array("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".utf8)
+            _ = head.withUnsafeBufferPointer { rawSend(c, $0.baseAddress!, $0.count) }
+            var b: UInt8 = 0x41
+            while true {
+                stop.lock(); let s = stopped; stop.unlock()
+                if s { break }
+                Thread.sleep(forTimeInterval: 0.15)
+                if rawSend(c, &b, 1) < 0 { break }
+            }
+            posixClose(c)
+        }.start()
+        defer {
+            stop.lock(); stopped = true; stop.unlock()
+            _ = rawShutdown(lfd)
+            posixClose(lfd)
+        }
+        let start = Date()
+        XCTAssertThrowsError(try HTTPClient.post(host: "127.0.0.1", port: port, path: "/", headers: [], body: [],
+                                                 connectTimeout: 2, readTimeout: 1, totalTimeout: 0.8)) {
+            XCTAssertEqual($0 as? NetError, .timeout)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
     }
 }

@@ -24,6 +24,10 @@ public protocol ByteStream: AnyObject {
 public final class TCPSocket: ByteStream {
     private let lock = NSLock()
     private var fd: Int32
+    /// Set by `close()`. The descriptor is only released once no read/write is in flight,
+    /// so a recycled fd number can never be hit by a stale I/O call.
+    private var closed = false
+    private var inFlight = 0
 
     /// Receive timeout in seconds (SO_RCVTIMEO). 0 means no timeout.
     public var readTimeout: TimeInterval = 8 {
@@ -35,20 +39,41 @@ public final class TCPSocket: ByteStream {
         applyReadTimeout()
     }
 
-    deinit { close() }
+    deinit {
+        if fd >= 0 { posixClose(fd) }
+    }
 
     private func applyReadTimeout() {
         lock.lock()
         defer { lock.unlock() }
-        guard fd >= 0 else { return }
+        guard !closed, fd >= 0 else { return }
         var tv = makeTimeval(readTimeout)
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
     }
 
-    private func currentFd() -> Int32 {
+    /// Registers an in-flight I/O call and returns the fd, or throws `.closed`.
+    private func beginIO() throws -> Int32 {
         lock.lock()
         defer { lock.unlock() }
+        if closed || fd < 0 { throw NetError.closed }
+        inFlight += 1
         return fd
+    }
+
+    private func endIO() {
+        lock.lock()
+        defer { lock.unlock() }
+        inFlight -= 1
+        if closed && inFlight == 0 && fd >= 0 {
+            posixClose(fd)
+            fd = -1
+        }
+    }
+
+    private var isClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed
     }
 
     public static func connect(host: String, port: Int, timeout: TimeInterval) throws -> TCPSocket {
@@ -131,10 +156,11 @@ public final class TCPSocket: ByteStream {
     }
 
     public func write(_ bytes: [UInt8]) throws {
+        let f = try beginIO()
+        defer { endIO() }
         var sent = 0
         while sent < bytes.count {
-            let f = currentFd()
-            if f < 0 { throw NetError.closed }
+            if isClosed { throw NetError.closed }
             let n = bytes.withUnsafeBufferPointer { buf in
                 send(f, buf.baseAddress! + sent, buf.count - sent, sendFlags)
             }
@@ -151,10 +177,11 @@ public final class TCPSocket: ByteStream {
 
     public func read(maxLength: Int) throws -> [UInt8] {
         guard maxLength > 0 else { return [] }
+        let f = try beginIO()
+        defer { endIO() }
         var buf = [UInt8](repeating: 0, count: maxLength)
         while true {
-            let f = currentFd()
-            if f < 0 { throw NetError.closed }
+            if isClosed { throw NetError.closed }
             let n = recv(f, &buf, maxLength, 0)
             if n >= 0 {
                 buf.removeSubrange(n..<buf.count)
@@ -163,18 +190,23 @@ public final class TCPSocket: ByteStream {
             let e = errno
             if e == EINTR { continue }
             if e == EAGAIN || e == EWOULDBLOCK { throw NetError.timeout }
-            if currentFd() < 0 || e == EBADF { throw NetError.closed }
+            if isClosed || e == EBADF { throw NetError.closed }
             if e == ECONNRESET { throw NetError.closed }
             throw NetError.io(e)
         }
     }
 
+    /// Unblocks pending I/O via shutdown; the descriptor itself is closed once idle.
     public func close() {
         lock.lock()
         defer { lock.unlock() }
+        guard !closed else { return }
+        closed = true
         guard fd >= 0 else { return }
         _ = shutdown(fd, shutRdWr)
-        posixClose(fd)
-        fd = -1
+        if inFlight == 0 {
+            posixClose(fd)
+            fd = -1
+        }
     }
 }

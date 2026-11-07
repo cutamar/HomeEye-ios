@@ -1,7 +1,9 @@
 /// RFC 7798 depacketizer (single NAL, AP, FU). No DONL support; PACI is dropped.
 public final class H265Depacketizer: VideoDepacketizer {
     private static let maxNALSize = 4 * 1024 * 1024
-    private static let maxPendingBytes = 16 * 1024 * 1024
+    private static let maxPendingBytes = 8 * 1024 * 1024
+    private static let maxPendingNALs = 1024
+    private static let perNALOverhead = 64
 
     private var vps: [UInt8]?
     private var sps: [UInt8]?
@@ -113,11 +115,11 @@ public final class H265Depacketizer: VideoDepacketizer {
         case 35, 41...63:
             break
         default:
-            if pendingBytes + nal.count > Self.maxPendingBytes {
+            if pending.count >= Self.maxPendingNALs || pendingBytes + nal.count + Self.perNALOverhead > Self.maxPendingBytes {
                 discardAll()
                 return
             }
-            pendingBytes += nal.count
+            pendingBytes += nal.count + Self.perNALOverhead
             pendingTimestamp = timestamp
             if (16...21).contains(type) { pendingHasIRAP = true }
             pending.append(nal)

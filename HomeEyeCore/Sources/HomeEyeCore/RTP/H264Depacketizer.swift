@@ -1,7 +1,9 @@
 /// RFC 6184 depacketizer (single NAL, STAP-A, FU-A).
 public final class H264Depacketizer: VideoDepacketizer {
     private static let maxNALSize = 4 * 1024 * 1024
-    private static let maxPendingBytes = 16 * 1024 * 1024
+    private static let maxPendingBytes = 8 * 1024 * 1024
+    private static let maxPendingNALs = 1024
+    private static let perNALOverhead = 64
 
     private var sps: [UInt8]?
     private var pps: [UInt8]?
@@ -106,11 +108,11 @@ public final class H264Depacketizer: VideoDepacketizer {
         case 0, 9, 24...31:
             break
         default:
-            if pendingBytes + nal.count > Self.maxPendingBytes {
+            if pending.count >= Self.maxPendingNALs || pendingBytes + nal.count + Self.perNALOverhead > Self.maxPendingBytes {
                 discardAll()
                 return
             }
-            pendingBytes += nal.count
+            pendingBytes += nal.count + Self.perNALOverhead
             pendingTimestamp = timestamp
             if type == 5 { pendingHasIDR = true }
             pending.append(nal)
