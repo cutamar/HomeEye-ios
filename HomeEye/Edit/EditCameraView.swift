@@ -7,8 +7,7 @@ struct EditCameraView: View {
     @EnvironmentObject private var store: CameraStore
 
     var body: some View {
-        let existing = cameraID.flatMap { store.camera(id: $0) }
-        EditCameraForm(existing: existing, password: existing.map { store.password(for: $0.id) } ?? "")
+        EditCameraForm(cameraID: cameraID, store: store)
     }
 }
 
@@ -18,8 +17,12 @@ private struct EditCameraForm: View {
     @StateObject private var model: EditCameraModel
     @State private var showPassword = false
 
-    init(existing: Camera?, password: String) {
-        _model = StateObject(wrappedValue: EditCameraModel(existing: existing, password: password))
+    init(cameraID: String?, store: CameraStore) {
+        // The autoclosure runs once, so the password is read only when the model is created.
+        _model = StateObject(wrappedValue: {
+            let existing = cameraID.flatMap { store.camera(id: $0) }
+            return EditCameraModel(existing: existing, password: existing.map { store.password(for: $0.id) } ?? "")
+        }())
     }
 
     var body: some View {
@@ -52,7 +55,18 @@ private struct EditCameraForm: View {
             } message: {
                 Text("\(model.saveAnywayReason ?? "")\n\nSave anyway? HomeEye will use the usual stream addresses and try again when you open it.")
             }
+            .alert("Couldn't save the camera.", isPresented: saveErrorBinding) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(model.saveError ?? "")
+            }
         }
+    }
+
+    private var saveErrorBinding: Binding<Bool> {
+        Binding(
+            get: { model.saveError != nil },
+            set: { if !$0 { model.saveError = nil } })
     }
 
     private var saveAnywayBinding: Binding<Bool> {
@@ -128,7 +142,6 @@ private struct EditCameraForm: View {
                         SecureField("Password", text: $model.password)
                     }
                 }
-                .textContentType(.password)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 Button {

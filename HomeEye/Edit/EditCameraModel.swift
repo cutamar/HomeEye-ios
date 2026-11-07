@@ -11,6 +11,9 @@ enum TestState: Equatable {
 @MainActor
 final class EditCameraModel: ObservableObject {
     private let existing: Camera?
+    /// Stable id for a new camera, so repeated saves update one record.
+    private let newID = UUID().uuidString
+    private var isSaving = false
     let isNew: Bool
 
     @Published var name: String
@@ -32,6 +35,8 @@ final class EditCameraModel: ObservableObject {
     @Published private(set) var found: [DiscoveredCamera] = []
     /// Set when saving failed the connection test; the view asks "save anyway?".
     @Published var saveAnywayReason: String?
+    /// Set when the camera couldn't be written to storage.
+    @Published var saveError: String?
 
     private var testTask: Task<Void, Never>?
 
@@ -93,21 +98,35 @@ final class EditCameraModel: ObservableObject {
 
     /// Saves after a successful test. If the test fails, asks whether to save anyway.
     func save(store: CameraStore, onDone: @escaping () -> Void) {
+        if isSaving { return }
+        isSaving = true
         if case .ok(let result) = test {
-            if self.store(probe: result, in: store) { onDone() }
+            finish(probe: result, store: store, onDone: onDone)
             return
         }
         startTest(
             onSuccess: { [weak self] result in
-                guard let self else { return }
-                if self.store(probe: result, in: store) { onDone() }
+                self?.finish(probe: result, store: store, onDone: onDone)
             },
-            onFailure: { [weak self] reason in self?.saveAnywayReason = reason })
+            onFailure: { [weak self] reason in
+                self?.isSaving = false
+                self?.saveAnywayReason = reason
+            })
     }
 
     func saveAnyway(store: CameraStore, onDone: @escaping () -> Void) {
         saveAnywayReason = nil
-        if self.store(probe: nil, in: store) { onDone() }
+        if isSaving { return }
+        isSaving = true
+        finish(probe: nil, store: store, onDone: onDone)
+    }
+
+    private func finish(probe: ProbeResult?, store: CameraStore, onDone: () -> Void) {
+        if self.store(probe: probe, in: store) {
+            onDone()
+        } else {
+            isSaving = false
+        }
     }
 
     private func startTest(onSuccess: @escaping (ProbeResult) -> Void, onFailure: @escaping (String) -> Void) {
@@ -136,7 +155,7 @@ final class EditCameraModel: ObservableObject {
     private func store(probe: ProbeResult?, in store: CameraStore) -> Bool {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        var cam = existing ?? Camera(name: "", host: "", username: "")
+        var cam = existing ?? Camera(id: newID, name: "", host: "", username: "")
         if !trimmedName.isEmpty {
             cam.name = trimmedName
         } else if let model = probe?.info.model, !model.isEmpty {
@@ -154,7 +173,7 @@ final class EditCameraModel: ObservableObject {
             try store.save(cam, password: password)
             return true
         } catch {
-            test = .failed("Couldn't save the camera. \(error.localizedDescription)")
+            saveError = error.localizedDescription
             return false
         }
     }
