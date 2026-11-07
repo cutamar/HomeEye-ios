@@ -13,18 +13,17 @@ final class LiveModel: ObservableObject {
     /// One-off message for the toast.
     @Published var message: String?
 
-    private let password: String
     private var client: OnvifClient?
     private var token: String?
     private var mover: PTZMover?
     private var connecting = false
 
-    init(camera: Camera, password: String) {
+    init(camera: Camera) {
         self.camera = camera
-        self.password = password
     }
 
-    func connectPTZ() async {
+    /// The password is read by the caller at call time, never stored on the model.
+    func connectPTZ(password: String) async {
         guard camera.hasPtz, !connecting, client == nil else { return }
         connecting = true
         defer { connecting = false }

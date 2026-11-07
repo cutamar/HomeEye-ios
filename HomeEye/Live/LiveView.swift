@@ -11,11 +11,10 @@ struct LiveView: View {
     var body: some View {
         Group {
             if let camera = store.cameras.first(where: { $0.id == cameraID }) {
-                let password = store.password(for: cameraID)
-                LiveScreen(camera: camera, password: password, onEdit: { editing = true })
-                    // An edit restarts the stream and pan/tilt. The Digest pin is left out so
-                    // pinning after the first connect doesn't reconnect.
-                    .id(LiveIdentity(camera: camera, password: password))
+                LiveScreen(camera: camera, onEdit: { editing = true })
+                    // A saved edit (including a password-only one) restarts the stream and
+                    // pan/tilt. The Digest pin is left out so pinning doesn't reconnect.
+                    .id(LiveIdentity(camera: camera, revision: store.revisions[cameraID] ?? 0))
             } else {
                 Color.backdrop
                     .ignoresSafeArea()
@@ -31,19 +30,18 @@ struct LiveView: View {
 
 private struct LiveIdentity: Hashable {
     var camera: Camera
-    var password: String
+    var revision: Int
 
-    init(camera: Camera, password: String) {
+    init(camera: Camera, revision: Int) {
         var c = camera
         c.authPinnedDigest = nil
         self.camera = c
-        self.password = password
+        self.revision = revision
     }
 }
 
 private struct LiveScreen: View {
     let camera: Camera
-    let password: String
     let onEdit: () -> Void
 
     @EnvironmentObject private var store: CameraStore
@@ -57,12 +55,12 @@ private struct LiveScreen: View {
     @State private var askingPresetName = false
     @State private var presetName = ""
     @State private var deleting: Preset?
+    @State private var backgrounded = false
 
-    init(camera: Camera, password: String, onEdit: @escaping () -> Void) {
+    init(camera: Camera, onEdit: @escaping () -> Void) {
         self.camera = camera
-        self.password = password
         self.onEdit = onEdit
-        _model = StateObject(wrappedValue: LiveModel(camera: camera, password: password))
+        _model = StateObject(wrappedValue: LiveModel(camera: camera))
         _stream = StateObject(wrappedValue: LiveStream())
     }
 
@@ -173,19 +171,31 @@ private struct LiveScreen: View {
         }
         .onAppear {
             play()
-            Task { await model.connectPTZ() }
+            let password = store.password(for: camera.id)
+            Task { await model.connectPTZ(password: password) }
         }
         .onDisappear {
             stream.stop()
             model.close()
         }
         .onChange(of: model.hd) { play() }
+        // Like Android ON_STOP: the stream only stops in the background; a brief
+        // .inactive (Control Center, alerts) just stops any pan/tilt movement.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                play()
-            } else {
+            switch phase {
+            case .background:
                 stream.stop()
                 model.release()
+                backgrounded = true
+            case .inactive:
+                model.release()
+            case .active:
+                if backgrounded {
+                    backgrounded = false
+                    play()
+                }
+            @unknown default:
+                break
             }
         }
         .onChange(of: fullscreen) {
@@ -332,6 +342,8 @@ private struct LiveScreen: View {
     private func play() {
         let store = store
         let id = camera.id
+        // Read once per connect; never kept in view state or identity.
+        let password = store.password(for: id)
         stream.play(
             url: camera.rtspURL(hd: model.hd),
             credentials: camera.username.isEmpty
