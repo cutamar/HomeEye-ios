@@ -22,6 +22,8 @@ public struct DiscoveredCamera: Hashable {
 /// Finds ONVIF cameras on the local network (WS-Discovery probe).
 public enum Discovery {
     static let multicastAddress = "239.255.255.250"
+    /// Upper bound on results per scan (replies are untrusted UDP).
+    static var maxResults = 256
 
     public static func probeMessage(messageID: String = "uuid:" + UUID().uuidString.lowercased()) -> String {
         """
@@ -46,9 +48,12 @@ public enum Discovery {
         guard let root = try? XML.parse(xml) else { return nil }
         let xaddrs = (root.text("XAddrs") ?? "").split(whereSeparator: { $0.isWhitespace }).map(String.init)
         let comps = xaddrs.compactMap { URLComponents(string: $0) }
-        let chosen = comps.first(where: { $0.host?.contains(".") == true })
+        // Untrusted input: only accept ports in 1...65535 (a missing port defaults to 80).
+        let chosen = comps.first(where: {
+            $0.host?.contains(".") == true && ($0.port == nil || (1...65535).contains($0.port!))
+        })
         guard let host = chosen?.host ?? fallbackHost else { return nil }
-        let port = chosen?.port.flatMap { $0 > 0 ? $0 : nil } ?? 80
+        let port = chosen?.port ?? 80
         let scopes = (root.text("Scopes") ?? "").split(whereSeparator: { $0.isWhitespace }).map(String.init)
         func scope(_ key: String) -> String? {
             guard let s = scopes.first(where: { $0.contains("/\(key)/") }),
@@ -72,10 +77,16 @@ public enum Discovery {
 
     private static func send(_ fd: Int32, _ message: [UInt8], to addr: sockaddr_in) {
         var a = addr
-        _ = withUnsafePointer(to: &a) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sp in
-                sendto(fd, message, message.count, sendFlags, sp, socklen_t(MemoryLayout<sockaddr_in>.size))
+        for attempt in 0..<3 {
+            let r = withUnsafePointer(to: &a) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sp in
+                    sendto(fd, message, message.count, sendFlags, sp, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
             }
+            if r >= 0 { return }
+            let e = errno
+            guard (e == ENOBUFS || e == EAGAIN), attempt < 2 else { return }
+            usleep(5_000)
         }
     }
 
@@ -106,7 +117,8 @@ public enum Discovery {
                 if state.isStopped { break }
                 if let addr = makeAddr(target, port: port) { send(fd, message, to: addr) }
             }
-            state.finish()
+            // If the receiver already gave up waiting, this thread owns closing the fd.
+            if state.finish() { posixClose(fd) }
             done.signal()
         }
         sender.start()
@@ -118,7 +130,7 @@ public enum Discovery {
         let hardStop = start.addingTimeInterval(timeout + 10)
         while true {
             let now = Date()
-            guard now < hardStop, now < start.addingTimeInterval(timeout) || !state.isFinished else { break }
+            guard found.count < maxResults, now < hardStop, now < start.addingTimeInterval(timeout) || !state.isFinished else { break }
             var ss = sockaddr_storage()
             var slen = socklen_t(MemoryLayout<sockaddr_storage>.size)
             let n = withUnsafeMutablePointer(to: &ss) { sp in
@@ -146,8 +158,9 @@ public enum Discovery {
         }
 
         state.stop()
-        _ = done.wait(timeout: .now() + 1)
-        posixClose(fd)
+        // Keep the fd open until the sender is out of sendto; bound the wait.
+        _ = done.wait(timeout: .now() + 5)
+        if state.abandon() { posixClose(fd) }
         return order
     }
 
@@ -166,8 +179,12 @@ private final class SenderState {
     private let lock = NSLock()
     private var stopped = false
     private var finished = false
+    private var abandoned = false
     var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return finished }
     func stop() { lock.lock(); stopped = true; lock.unlock() }
-    func finish() { lock.lock(); finished = true; lock.unlock() }
+    /// Called by the sender when done. Returns true if the receiver abandoned the fd to it.
+    func finish() -> Bool { lock.lock(); defer { lock.unlock() }; finished = true; return abandoned }
+    /// Called by the receiver. Returns true if the receiver should close the fd itself.
+    func abandon() -> Bool { lock.lock(); defer { lock.unlock() }; abandoned = true; return finished }
 }

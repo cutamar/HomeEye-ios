@@ -120,6 +120,78 @@ final class DiscoveryTests: XCTestCase {
         XCTAssertEqual(found.first?.port, 2020)
     }
 
+    func testOutOfRangePortIsRejected() {
+        for bad in ["99999", "0", "70000"] {
+            let xml = Self.simple.replacingOccurrences(of: "192.0.2.10:2020", with: "192.0.2.10:\(bad)")
+            XCTAssertNil(Discovery.parseProbeMatch(xml, fallbackHost: nil), bad)
+            let fb = Discovery.parseProbeMatch(xml, fallbackHost: "198.51.100.7")
+            XCTAssertEqual(fb?.host, "198.51.100.7")
+            XCTAssertEqual(fb?.port, 80)
+        }
+        let two = Self.simple.replacingOccurrences(
+            of: "http://192.0.2.10:2020/onvif/device_service",
+            with: "http://192.0.2.10:99999/x http://192.0.2.12:81/x")
+        XCTAssertEqual(Discovery.parseProbeMatch(two, fallbackHost: nil)?.host, "192.0.2.12")
+    }
+
+    func testInvalidPercentEncodingInScopesGivesNilName() {
+        let xml = Self.simple.replacingOccurrences(of: "name/TP-IPC", with: "name/%zz")
+        let cam = Discovery.parseProbeMatch(xml, fallbackHost: nil)
+        XCTAssertEqual(cam?.host, "192.0.2.10")
+        XCTAssertNil(cam?.name)
+        XCTAssertEqual(cam?.hardware, "Tapo C200")
+    }
+
+    func testDeeplyNestedXMLDoesNotCrash() {
+        let depth = 20000
+        let xml = "<a>" + String(repeating: "<b>", count: depth) + "x" + String(repeating: "</b>", count: depth) + "</a>"
+        let cam = Discovery.parseProbeMatch(xml, fallbackHost: "198.51.100.7")
+        XCTAssertTrue(cam == nil || cam?.host == "198.51.100.7")
+    }
+
+    func testResultCap() {
+        let saved = Discovery.maxResults
+        Discovery.maxResults = 2
+        defer { Discovery.maxResults = saved }
+        let fd = socket(AF_INET, sockDgram, 0)
+        var addr = sockaddr_in()
+        #if canImport(Darwin)
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
+        addr.sin_family = sa_family_t(AF_INET)
+        XCTAssertEqual(inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr), 1)
+        _ = withUnsafePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        var bound = sockaddr_in()
+        var blen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &bound) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &blen) }
+        }
+        let port = UInt16(bigEndian: bound.sin_port)
+        var tv = makeTimeval(5)
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        let responder = Thread {
+            var buf = [UInt8](repeating: 0, count: 65535)
+            var from = sockaddr_in()
+            var flen = socklen_t(MemoryLayout<sockaddr_in>.size)
+            let n = withUnsafeMutablePointer(to: &from) { p in
+                p.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, &buf, buf.count, 0, $0, &flen) }
+            }
+            guard n > 0 else { return }
+            for i in 1...5 {
+                let reply = Array(Self.simple.replacingOccurrences(of: "192.0.2.10", with: "192.0.2.\(i)").utf8)
+                _ = withUnsafePointer(to: &from) { p in
+                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, reply, reply.count, 0, $0, flen) }
+                }
+            }
+        }
+        responder.start()
+        let found = Discovery.probe(timeout: 1, unicastTargets: ["127.0.0.1"], port: port, multicast: false)
+        posixClose(fd)
+        XCTAssertEqual(found.count, 2)
+    }
+
     func testPrimaryIPv4DoesNotCrash() {
         _ = LocalNetwork.primaryIPv4()
     }
