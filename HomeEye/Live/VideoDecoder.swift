@@ -77,8 +77,8 @@ final class VideoDecoder {
             sampleBuffer: sampleBuffer,
             flags: [._1xRealTimePlayback],
             infoFlagsOut: nil
-        ) { [weak self] status, _, imageBuffer, _, _ in
-            self?.handleOutput(status: status, imageBuffer: imageBuffer)
+        ) { [weak self] outStatus, _, imageBuffer, _, _ in
+            self?.handleOutput(status: outStatus, imageBuffer: imageBuffer)
         }
         if Self.isFatal(status) {
             invalidateLocked()
@@ -211,7 +211,7 @@ final class VideoDecoder {
             customBlockSource: nil,
             offsetToData: 0,
             dataLength: n,
-            flags: 0,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
             blockBufferOut: &blockBuffer
         )
         guard status == noErr, let blockBuffer else { return nil }
