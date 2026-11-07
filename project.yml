@@ -20,6 +20,8 @@ targets:
       path: HomeEye/Info.plist
       properties:
         CFBundleDisplayName: HomeEye
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

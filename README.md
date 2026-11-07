@@ -45,7 +45,7 @@ HomeEye talks **directly to your camera on your own Wi-Fi** using the open ONVIF
 
 ## Compatible cameras
 
-Any camera with **ONVIF Profile S** (live streaming) should work. Pan/tilt needs ONVIF PTZ support.
+Any camera with **ONVIF Profile S** (live streaming) should work. Pan/tilt needs ONVIF PTZ support. Video must be H.264 or H.265; HomeEye streams RTSP over TCP.
 
 | Camera | Status |
 |---|---|
@@ -56,7 +56,7 @@ Any camera with **ONVIF Profile S** (live streaming) should work. Pan/tilt needs
 
 1. In the Tapo app, open the camera → **Settings → Advanced Settings → Camera Account**.
 2. Create a username and password. This is the camera's own login, not your TP-Link account.
-3. In HomeEye, tap **Find cameras on Wi-Fi** (or enter the IP), then use that login. Tapo's ONVIF port is `2020`.
+3. In HomeEye, tap **Find Cameras on Wi-Fi** (or enter the IP), then use that login. Tapo's ONVIF port is `2020`.
 
 **Keep the camera offline:** block its internet access in your router. HomeEye keeps working; only the Tapo cloud features stop.
 
@@ -84,7 +84,7 @@ cd HomeEye-ios
 brew install xcodegen && xcodegen generate && open HomeEye.xcodeproj
 ```
 
-The Xcode project is generated from `project.yml` and isn't checked in.
+The Xcode project is generated from `project.yml` and isn't checked in. To run on a phone from Xcode, select a team under Signing & Capabilities first.
 
 ### Project layout
 

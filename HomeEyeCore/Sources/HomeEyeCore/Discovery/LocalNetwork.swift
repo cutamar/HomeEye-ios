@@ -29,8 +29,13 @@ public enum LocalNetwork {
         }
 
         if let en0 = all.first(where: { $0.name == "en0" }) { return en0.ip }
+        #if canImport(Darwin)
+        // Wi-Fi (en*) or a bridge only; with Wi-Fi off, don't probe a cellular/VPN subnet.
+        return all.first(where: { $0.name.hasPrefix("en") || $0.name.hasPrefix("bridge") })?.ip
+        #else
         if let priv = all.first(where: { isPrivate($0.ip) }) { return priv.ip }
         return all.first?.ip
+        #endif
     }
 
     static func isPrivate(_ ip: String) -> Bool {
